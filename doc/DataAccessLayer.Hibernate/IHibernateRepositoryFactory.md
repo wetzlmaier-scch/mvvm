@@ -2,20 +2,27 @@
 
 ### Purpose
 
-This file defines `IHibernateRepositoryFactory<TKey>`, the contract for a factory that produces Hibernate-based repositories. It exists to give callers a stable interface for requesting NHibernate-backed repositories while hiding the session factory and configuration details inside the concrete implementation.
+This file defines `IHibernateRepositoryFactory<TKey>`, the contract for a factory that produces NHibernate-backed repositories. It is a thin specialization of the generic `IRepositoryFactory<TRepository, TKey>` from `DataAccessLayer`: it fixes `TRepository` to `IHibernateRepository<TKey>` and re-declares `Create()` as returning `IHibernateRepository<TKey>` directly, so callers write `IHibernateRepositoryFactory<TKey>` instead of the two-parameter generic name.
 
 ### Role in the Codebase
 
-It is the Hibernate-specific factory contract inside the `DataAccessLayer.Hibernate` namespace. The generic, engine-agnostic contract is `IRepositoryFactory<TRepository, TKey>` in `DataAccessLayer/IRepositoryFactory.cs`, which declares `Create()` and `Drop()` and constrains `TRepository` to `IRepository<TKey>`. This interface specializes that contract to the Hibernate repository type, so the business layer can ask for a factory without depending on any concrete data-access implementation.
+It is one of the seam interfaces in the `DataAccessLayer.Hibernate` folder, alongside `IHibernateRepository`, `IHibernateUnitOfWork`, and `IModelContext`. Its role is to let the business layer depend on repository creation without naming any concrete NHibernate types. The only implementation in the repository is `HibernateRepositoryFactory<TKey>` (same folder), which builds an `ISessionFactory` once and hands out `HibernateRepository<TKey>` instances. If this interface were removed, `HibernateRepositoryFactory` and the whole business-layer factory chain below it would lose their contract.
 
 ### Relationships
 
-- **`IRepositoryFactory<TRepository, TKey>`** (`DataAccessLayer/IRepositoryFactory.cs`): the base interface. It declares `Create()` and `void Drop()`. This interface inherits both; `Drop()` carries over unchanged, and `Create()` is hidden via `new` with a more specific return type of `IHibernateRepository<TKey>` instead of the base `TRepository` type argument.
-- **`IHibernateRepository<TKey>`** (`DataAccessLayer.Hibernate/IHibernateRepository.cs`): the repository type returned by `Create()`. It extends `IRepository<TKey>` and `IDisposable` and adds `Save<TEntity>` and a `UnitOfWork` property.
-- **`HibernateRepositoryFactory<TKey>`** (`DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`): the concrete implementation. It builds the NHibernate `ISessionFactory` in its constructor, and its `Create()` returns a `HibernateRepository<TKey>` wrapping a stateless session. Because `TRepository` is an out-variance (`out TRepository`) position, that implementation satisfies this interface.
-- **`BusinessLayer.IRepositoryFactory`** (`BusinessLayer/IRepositoryFactory.cs`): a non-generic marker interface that simply extends `IHibernateRepositoryFactory<int>`. This is the form the business layer would actually hold and resolve, so this interface is what business-layer code indirectly depends on.
+- **Extends** `IRepositoryFactory<IHibernateRepository<TKey>, TKey>` (defined in `DataAccessLayer/IRepositoryFactory.cs`), which declares `TRepository Create()` and `void Drop()` and constrains `TRepository : IRepository<TKey>` and `TKey : struct`.
+- **Produces** `IHibernateRepository<TKey>` (defined in `DataAccessLayer.Hibernate/IHibernateRepository.cs`), the repository interface with `Save<TEntity>` and the `UnitOfWork` property.
+- **Implemented by** `HibernateRepositoryFactory<TKey>` (`DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`), the single concrete factory.
+- **Consumed by the business layer**: `BusinessLayer/IRepositoryFactory.cs` is an empty non-generic interface extending `IHibernateRepositoryFactory<int>`, and `BusinessLayer/RepositoryFactory.cs` (`[Export]`-ed as MEF part) inherits `HibernateRepositoryFactory<int>`. So the practical flow is: business code resolves `BusinessLayer.IRepositoryFactory`, calls `Create()`, and receives an `IHibernateRepository<int>`.
 
 ### Behavior & Details
 
-- `TKey` is constrained to `struct`, matching the base `IRepositoryFactory`.
-- The `new IHibernateRepository<TKey> Create()` declaration **hides** rather than overrides the base `Create()` (interfaces cannot override). A caller holding an `IHibernateRepositoryFactory<TKey>` reference gets the specific `IHibernateRepository<TKey>` return type; a caller holding only the base `IRepositoryFactory<IHibernateRepository<TKey>, TKey>` reference gets the base return type and must cast if it wants the Hibernate-specific members like `Save` or `UnitOfWork`. The concrete class bridges the two by providing an explicit implementation of the base `Create()` that simply delegates to the public one.
+The interface is minimal, but one detail is worth knowing because it is easy to trip over:
+
+- `new IHibernateRepository<TKey> Create();` — the `new` keyword hides the base `IRepositoryFactory<TRepository, TKey>.Create()` rather than overriding it (interfaces cannot override). A caller holding `IHibernateRepositoryFactory<TKey>` gets the `IHibernateRepository<TKey>` return type, which is the point of the re-declaration. The base declaration is still visible when the same object is viewed through `IRepositoryFactory<IHibernateRepository<TKey>, TKey>`; `HibernateRepositoryFactory<TKey>` implements the explicit interface method `IRepositoryFactory<IHibernateRepository<TKey>, TKey>.Create()` by delegating to the public `Create()`, so both views return the same repository.
+- `void Drop()` is inherited unchanged from the base. In the only implementation it throws `NotImplementedException`, so do not rely on `Drop()` to release anything today.
+- The `where TKey : struct` constraint is repeated from the base and is what allows `TKey` to be `int` in the business layer's `IHibernateRepositoryFactory<int>` specialization.
+
+### Rough edges
+
+- The `new` modifier here is a code smell in its own right: re-declaring an inherited interface member with `new` is a classic sign that the base interface's type parameter should have been constrained more specifically. It works, but callers that upcast to the base interface get the less specific return type.

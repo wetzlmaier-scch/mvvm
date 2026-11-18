@@ -1,48 +1,40 @@
+# Common/Reflection/AssemblyHelper.cs
+
 ### Purpose
 
-`Common/Reflection/AssemblyHelper.cs` defines `AssemblyHelper`, a static class of small reflection utilities that answer questions about an already-loaded `Assembly`: its file name, its `System.Drawing` metadata attributes (company, product, copyright, trademark, culture, version numbers, public key token), plus two application-level helpers that locate the app's directory and load the application icon from the entry assembly's embedded resources.
-
-It exists so that UI, logging, and composition code can display or log "who am I running as" without each site duplicating the `Attribute.GetCustomAttribute` boilerplate.
+`AssemblyHelper` is a static class of small reflection utilities that answer questions about an already-loaded `Assembly`: where its file is, what its attributes say (company, product, version, copyright, etc.), and how to load the application's embedded icon. It exists so callers do not repeat `Attribute.GetCustomAttribute` lookups, `Uri`/`FileInfo` path parsing, and manifest-resource lookup boilerplate scattered through the app.
 
 ### Role in the Codebase
 
-It lives in the `Common` project under `Common/Reflection/`, alongside `Common/Composition/CompositionHelper.cs` — a shared-infrastructure folder the rest of the solution (`Mvvm`, `Mvvm.Wpf`, `Mvvm.Winforms`, the app projects) builds on. It is a helper with no state, no construction, and no project-specific logic; every member is a pure function of the `Assembly` you hand it (or of the executing/entry assembly).
-
-If it were removed, `CompositionHelper` and `MainViewModelBase` would break, and the metadata accessors would have to be re-implemented at every call site.
+It lives in `Common/Reflection/`, the sole file in that directory, and is part of the `Common` assembly. It is a pure helper with no internal dependencies: it references only framework namespaces (`System.Reflection`, `System.IO`, `System.Drawing`, `System.Text`). Nothing it provides is infrastructure — it is application metadata plumbing. Removing it would break two call sites: `CompositionHelper` (which needs `Extensions`) and `MainViewModelBase` (which needs `LoadApplicationIcon`). The attribute accessors are, as far as this repository shows, available but not currently called from within the repo.
 
 ### Relationships
 
-Dependencies are all framework: `System.Reflection`, `System.IO`, `System.Drawing`, `System.Text`. Nothing in this repository is referenced by `AssemblyHelper` itself.
-
-Callers found in the repository:
-
-- `Common/Composition/CompositionHelper.cs` uses `AssemblyHelper.Extensions` when enumerating `*.dll` and `*.exe` files next to the executing assembly to build its MEF `AggregateCatalog`.
-- `Mvvm/MainViewModelBase.cs` calls `AssemblyHelper.LoadApplicationIcon()` in its constructor to set the WPF window's `Icon` from the entry assembly.
-
-The attribute accessors (`GetAssemblyCompany`, `GetAssemblyProduct`, `GetAssemblyCopyright`, `GetAssemblyTrademark`, `GetAssemblyCulture`, `GetAssemblyVersion`, `GetAssemblyFileVersion`, `GetPublicKeyToken`) have no in-repository callers at present; they are a general-purpose API for whoever needs assembly metadata (about `AssemblyHelper` itself, or about assemblies loaded by `CompositionHelper`).
+- **`Common/Composition/CompositionHelper.cs`** — the main internal consumer. Its `CreateCompositionContainer` enumerates files next to `Assembly.GetExecutingAssembly()` and uses `AssemblyHelper.Extensions` (`.dll`, `.exe`) to decide which files are candidate assemblies for the MEF `AggregateCatalog`.
+- **`Mvvm/MainViewModelBase.cs`** — its constructor calls `LoadApplicationIcon()` and converts the resulting `Icon` into a WPF `ImageSource` to set the window icon.
+- Callers pass in `Assembly` instances; the class itself never loads assemblies. `LoadApplicationIcon` is the exception in that it fetches the *entry* assembly (`Assembly.GetEntryAssembly()`) itself.
 
 ### Behavior & Details
 
-- **`Extensions`** — `public static readonly string[]` containing `".dll"` and `".exe"`. `CompositionHelper` iterates this to gather candidate assembly files; `readonly` means the array reference is fixed, but the array is still publicly mutable, so callers should not treat it as immutable content.
+**File locations**
 
-- **`GetAssemblyFileName(assembly)`** — returns `new Uri(assembly.Location).LocalPath`. This normalizes the location into a real file path rather than a `file:///` URI; it is the base for the other two file helpers.
+- `GetAssemblyFileName(assembly)` — returns `new Uri(assembly.Location).LocalPath`, i.e. the file system path of the assembly, decoded from its location URI. This is the basis for the next two methods.
+- `GetApplicationDirectory()` — the directory containing the *executing* assembly's file (nullable; the directory of a file path). This is the de facto "application directory" used elsewhere for discovery.
+- `GetAssemblyFileExtension(assembly)` — the file extension (`.dll` / `.exe`) of the assembly's file, via `FileInfo`.
 
-- **`GetApplicationDirectory()`** — the directory containing the *executing* assembly's file. Note the nullable return: if the assembly has no resolvable location, `FileInfo`'s `DirectoryName` can be `null`, which is propagated.
+**Application icon**
 
-- **`GetAssemblyFileExtension(assembly)`** — file extension of the assembly's location, e.g. `".dll"`.
+`LoadApplicationIcon()` targets the *entry* assembly, not the executing one, and looks for an embedded manifest resource named `<entryAssemblySimpleName>.App.ico` (e.g. `MyApp.App.ico` for an assembly named `MyApp`). It returns `null` if there is no entry assembly (e.g. running under a host) or if the resource is absent. The `Icon` is wrapped around a live `Stream` from the manifest resource; note the caller (`MainViewModelBase`) uses it once to build a bitmap and does not dispose it.
 
-- **`LoadApplicationIcon()`** — takes the *entry* assembly (`Assembly.GetEntryAssembly()`), not the executing one, and reads the embedded resource named `<entryAssemblySimpleName>.App.ico` via `GetManifestResourceStream`. The name is constructed from `assembly.GetName().Name + ".App.ico"`, so the resource name in your entry assembly must match its simple assembly name exactly (e.g. assembly `MyApp` → resource `MyApp.App.ico`). Returns `null` when there is no entry assembly or no such resource; otherwise returns a new `Icon` (the caller is responsible for disposing it — `MainViewModelBase` uses it synchronously and does not).
+**Attribute accessors**
 
-- **`GetAssemblyCompany` / `GetAssemblyProduct` / `GetAssemblyCopyright` / `GetAssemblyTrademark` / `GetAssemblyCulture`** — each reads one `Assembly*Attribute` with `Attribute.GetCustomAttribute` and returns the attribute's value, or `string.Empty` when the attribute is absent. The empty-string fallback is the common contract: callers can treat the result as a display string without null checks.
+`GetAssemblyCompany`, `GetAssemblyProduct`, `GetAssemblyCopyright`, `GetAssemblyTrademark`, `GetAssemblyCulture`, `GetAssemblyVersion`, and `GetAssemblyFileVersion` all follow one pattern: `Attribute.GetCustomAttribute(assembly, typeof(XxxAttribute))` cast to nullable, returning the attribute's property or `string.Empty` when the attribute is absent. They never throw for a missing attribute — missing metadata yields an empty string, not `null`.
 
-- **`GetAssemblyVersion(assembly)`** — reads `AssemblyVersionAttribute` and returns `attribute.Version`. That property is a `string` holding the `[assembly: AssemblyVersion("x.y.z.w")]` value.
+**Public key token**
 
-- **`GetAssemblyFileVersion(assembly)`** — same shape for `AssemblyFileVersionAttribute` and its `Version` property.
-
-- **`GetPublicKeyToken(assembly)`** — pulls `assembly.GetName().GetPublicKey()` and formats the whole public key as a lowercase hex string (two hex digits per byte, in order). Returns `string.Empty` if the assembly is not strong-named. Note this is the *public key*, not the key token — it is the long form, not the 16-byte token you typically see in a `.dll`'s identity.
+`GetPublicKeyToken(assembly)` reads `assembly.GetName().GetPublicKey()` and hex-encodes each byte as two lowercase hex digits (`{0:x2}`). Returns `string.Empty` for unsigned assemblies (null public key). Note this formats the full public *key*, not the short 16-byte public key token that appears in a strong-name string.
 
 ### Rough edges
 
-- `GetAssemblyFileName` assumes `assembly.Location` is a file URI. For dynamically generated or in-memory-only assemblies, `Location` is `string.Empty` and `new Uri("").LocalPath` returns `""`; the downstream `FileInfo("").DirectoryName` would be `null` for `GetApplicationDirectory` and `GetAssemblyFileExtension` would throw. Callers dealing with dynamic assemblies should not use these two.
-- `GetAssemblyVersion` and `GetAssemblyFileVersion` return the attribute's declared `Version` string, not the runtime `AssemblyName.Version` — for `AssemblyVersionAttribute` that is the same thing, but the implementation goes through the attribute rather than `assembly.GetName().Version`, so any subtle divergence (e.g. attribute not present but version still in metadata) would surface as `string.Empty`.
-- `LoadApplicationIcon` returns a live `Icon` wrapper over an unmanaged GDI+ handle. The repository's only caller (`MainViewModelBase`) never disposes it, so each `MainViewModelBase` instantiation leaks one `Icon` for the lifetime of the process (in practice, one per app launch).
+- `GetAssemblyFileName` calls `new Uri(assembly.Location)` and will throw `UriFormatException` for dynamic/in-memory assemblies whose `Location` is empty; `GetApplicationDirectory` and `GetAssemblyFileExtension` inherit that behavior.
+- The name `GetPublicKeyToken` is misleading: it serializes the full public key (`GetPublicKey()`), not the public key token (the lower 8 bytes of the SHA-1 hash of the key) that `GetName()` exposes via token-based APIs.

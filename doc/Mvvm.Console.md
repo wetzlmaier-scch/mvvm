@@ -1,49 +1,41 @@
 ### Purpose
 
-`Mvvm.Console` is a .NET class library that provides a console-based implementation of the `IMessageService` interface defined in the `Mvvm` project. Its sole responsibility is to enable ViewModels to display messages, warnings, and errors to a console user via colored text output. This directory exists to allow console applications to host the shared Mvvm infrastructure without requiring WPF or WinForms dependencies, serving as one of three sibling implementations (alongside `Mvvm.Wpf` and `Mvvm.Winforms`) for the same contract.
+The `Mvvm.Console` directory is a class library that provides the console-host implementation of the `IMessageService` interface. Its responsibility is to allow ViewModels in the framework-agnostic `Mvvm` project to display messages, warnings, and errors via colored terminal text, without introducing dependencies on WPF or WinForms. This directory contains a single source file, which acts as the adapter for the messaging contract in console applications.
 
 ### Software Components
 
-The library consists of two primary artifacts:
+The directory contains exactly one source component: `MessageService`.
 
-*   **`MessageService`**: Defined in [MessageService.cs](Mvvm.Console/MessageService.md), this class is the core component. It is decorated with `[Export(typeof(IMessageService))]` to make it discoverable via MEF. It implements the `ShowMessage`, `ShowWarning`, and `ShowError` methods by writing to `Console.Out` or `Console.Error` with specific foreground colors (white, yellow, and red, respectively). The three question methods (`ShowYesNoCancelQuestion`, `ShowYesNoQuestion`, `ShowOkCancelQuestion`) are present to satisfy the interface but throw `NotImplementedException`, as modal dialogs are not feasible in a standard console host.
-*   **Project Definition**: Defined in [Mvvm.Console.csproj](Mvvm.Console/Mvvm.Console.md), this file configures the library to target `net10.0-windows` and establishes the dependency on the `Mvvm` project for the interface definition and on `System.ComponentModel.Composition` for MEF support.
+-   `MessageService.cs`: Defines the `MessageService` class, which implements `IMessageService`. It uses MEF (`[Export(typeof(IMessageService))]`) for dependency injection. The class handles `ShowMessage`, `ShowWarning`, and `ShowError` by writing colored text to `System.Console`. It includes stub implementations for question methods (`ShowYesNoCancelQuestion`, etc.) that throw `NotImplementedException` because a console cannot present modal dialogs.
 
 ### Relationships
 
-`Mvvm.Console` depends strictly on the `Mvvm` project to satisfy the `IMessageService` contract. It does not reference other host-specific projects (`Mvvm.Wpf` or `Mvvm.Winforms`), ensuring that a console host remains lightweight. Conversely, consumer projects like `ConsoleApp1` reference `Mvvm.Console` to allow MEF to inject the console-specific `MessageService` into ViewModels that import `IMessageService`. The dependency direction is strictly outward from the consumer to this library, and from this library to the core `Mvvm` abstraction.
+`MessageService` depends on the `Mvvm` project for the `IMessageService` interface and the `MessageResult` enum. It relies on `System.ComponentModel.Composition` for MEF-based discovery. The class does not depend on any other UI framework. Callers, such as ViewModels in other parts of the solution, depend on the `IMessageService` interface and receive this specific implementation via MEF composition when running in a console host.
 
 ```mermaid
 flowchart TD
     subgraph "Mvvm.Console"
         MS[MessageService]
-        CSP[Mvvm.Console.csproj]
     end
-
+    
     subgraph "Mvvm"
         IMS[IMessageService]
         MR[MessageResult]
     end
-
+    
     subgraph "External"
         MEF[System.ComponentModel.Composition]
-        CONS[ConsoleApp1]
     end
-
-    CSP -->|references| MEF
-    CSP -->|project reference| IMS
+    
     MS -->|implements| IMS
-    MS -->|uses| MEF
     MS -->|uses| MR
-    CONS -->|references| CSP
-    CONS -->|MEF injection target| MS
+    MS -->|uses| MEF
 ```
 
 ### Rough edges
 
-*   The question methods in [MessageService](Mvvm.Console/MessageService.md) throw `NotImplementedException` rather than providing a fallback, meaning any ViewModel attempting to show a question in a console app will crash at runtime.
-*   The `ShowMessage` and `ShowWarning` methods permanently alter the console foreground color and do not restore the previous color, which can affect subsequent non-Mvvm output in the console.
+-   The question methods (`ShowYesNoCancelQuestion`, etc.) throw `NotImplementedException` rather than degrading to text prompts, causing runtime crashes if a console-hosted ViewModel triggers a dialog.
+-   `ShowMessage`, `ShowWarning`, and `ShowError` set `System.Console.ForegroundColor` but never restore it, causing color state to leak into subsequent unrelated console output.
 
 ## Contents
 - [MessageService.cs](Mvvm.Console/MessageService.md)
-- [Mvvm.Console.csproj](Mvvm.Console/Mvvm.Console.md)

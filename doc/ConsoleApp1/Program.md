@@ -1,33 +1,42 @@
-### Documentation
+# ConsoleApp1/Program.cs
 
-**Path:** `ConsoleApp1/Program.cs`
+The `Program` class — the `Main` entry point of the ConsoleApp1 console application.
 
 ### Purpose
 
-The entry point of the console application — `Main` builds a MEF (Managed Extensibility Framework) dependency-injection container from the assemblies in the application directory, pulls in the user-management view models, and runs a small demo: it saves the same user 100 times, then loads all active users and prints each one to the console. It exists to exercise the `UserManagement` view models end-to-end without a GUI, in the same role that `WinFormsApp1/Program.cs` and `WpfApp1/App.xaml.cs` play for their respective hosts.
+This is the executable's entry point for a headless (no UI) client of the `UserManagement` module. It exists to demonstrate and exercise the full MEF wiring end to end: build a composition container from the assemblies in the output directory, resolve the user-management view model, create 100 users through `AddUserViewModel.SaveUserAsync()`, then load the active-user list through `ShowUsersViewModel.OnLoadedAsync()` and print every user's name to the console. The only output of the whole program is the one `Console.WriteLine` per user at the end.
 
 ### Role in the Codebase
 
-`ConsoleApp1` is one of three thin application hosts in the repository (console, WinForms, WPF). The real behaviour lives in the shared layer — `UserManagement/ViewModel`, `Mvvm`, `BusinessLayer`, and the `DataAccessLayer*` projects — which this program consumes. Removing this file only removes the console demo; the other hosts and all shared code are unaffected.
+`ConsoleApp1` is one of three host applications in the solution (alongside `WinFormsApp1` and `WpfApp1`). The console host is the simplest of the three: it contains no views or views' code at all, just this entry point, `ConsoleApp1.csproj`, and `App.config`. It is the composition root for this host — the place where the container is created and the first export is resolved. The other two hosts do the same kind of wiring for their own UIs (for instance `WinFormsApp1/View/UserForm.cs` resolves `IUserViewModel` for data binding). Remove this program and the repository loses its command-line way to run the user-management feature and verify the MEF composition at all; nothing else depends on the `Program` type itself.
+
+The project reference set is `Common` (composition/reflection helpers), `Mvvm.Console`, and `UserManagement` (the feature's view models and their exports).
 
 ### Relationships
 
-- `Common/Composition/CompositionHelper.cs` — `CompositionHelper.CreateCompositionContainer(ignoreAssemblies)` scans the directory containing `Common`'s assembly for `.dll`/`.exe` files (per `AssemblyHelper.Extensions`), loads each one, and builds a `CompositionContainer` over an aggregate of `AssemblyCatalog`s. Every non-trivial load failure is swallowed with a `Console.WriteLine` of the message, so a missing dependency manifests later as a missing export rather than at startup.
-- `UserManagement/ViewModel/IUserViewModel.cs` — the contract the program resolves. Implemented by `UserViewModel`, which is `[Export]`ed as both `IUserViewModel` and `IMainViewModel` and has `[Import]`ed `IAddUserViewModel` and `IShowUsersViewModel` members.
-
-No other project references `ConsoleApp1` or its `Program` class; it is a leaf.
+- `Common.Composition.CompositionHelper` (Common/Composition/CompositionHelper.cs) — builds the MEF container. `Program` calls the `CreateCompositionContainer(string[] ignoreAssemblies, ...)` overload. That method scans the directory of `Common`'s own assembly for `*.dll`/`*.exe` files (per `Common.Reflection.AssemblyHelper.Extensions`), skips any file whose name is in `ignoreAssemblies` (case-insensitive), loads each surviving file with `Assembly.LoadFrom` into an `AggregateCatalog`, then also adds the executing assembly and the entry assembly, and finally composes the container with itself exported. Note it silently `Console.WriteLine`s and skips any assembly it fails to load.
+- `UserManagement.ViewModel.IUserViewModel` (UserManagement/ViewModel/IUserViewModel.cs) — the contract the program resolves. The concrete class `UserViewModel` (UserManagement/ViewModel/UserViewModel.cs) carries `[Export(typeof(IUserViewModel))]` and `[Export(typeof(IMainViewModel))]`, and its two child properties (`AddUserViewModel`, `ShowUsersViewModel`) are MEF `[Import]`ed, so resolving `IUserViewModel` transitively composes the rest of the feature graph (`AddUserViewModel`, `ShowUsersViewModel`, `IUserService`, `ILoggingService`, `IMessageService`).
+- `AddUserViewModel` / `ShowUsersViewModel` (UserManagement/ViewModel/) — the two children the program drives. `AddUserViewModel.SaveUserAsync()` validates, calls `UserService.AddUser(...)`, broadcasts a `UserChangedMessage` via `WeakReferenceMessenger`, and clears its own fields; `ShowUsersViewModel.OnLoadedAsync()` calls `UserService.GetActiveUsers()` and fills its `Users` collection, which also listens for `UserChangedMessage`.
+- Configuration: `App.config` supplies the `ConnectionString` (`Server=localhost;Database=Users;...`), which the data-access side of the feature consumes at runtime. The program itself never reads configuration.
 
 ### Behavior & Details
 
-`Main` is `async` and runs under a `using` block, so the composition container is disposed when the method returns. The sequence is:
+Startup, in order:
 
-1. **Build the container.** `CompositionHelper.CreateCompositionContainer(["ConsoleApp1.exe"])` loads every `.dll` and `.exe` next to `Common`'s assembly into an `AggregateCatalog`, skipping the file named `ConsoleApp1.exe` (case-insensitive), and adds the executing and entry assemblies if not already cataloged. Because the ignore check compares file names, this excludes whichever assembly happens to be named `ConsoleApp1.exe` from the MEF scan — the executing/entry assemblies are cataloged separately just below.
-2. **Resolve the view model.** `container.GetExportedValues<IUserViewModel>().SingleOrDefault()` returns the `UserViewModel` export. `SingleOrDefault()` means a *second* `IUserViewModel` export would throw on the ambiguity. The following `if (userViewModel == null)` guard is a dead check: `SingleOrDefault()` never returns `null` here — it returns the single element or throws — so "IUserViewModel not found." can in practice only surface as an unhandled `InvalidOperationException` from `SingleOrDefault()`.
-3. **Insert 100 users.** The loop writes the literal strings `"Firstname"` / `"Lastname"` into `AddUserViewModel.FirstName`/`LastName` and awaits `SaveUserAsync()` each iteration. Each save: validates via `UserValidator`, calls `UserService.AddUser` with a `UserDto`, broadcasts a `UserChangedMessage` over `WeakReferenceMessenger`, and clears the fields — so `ShowUsersViewModel`'s messenger handler appends a `UserModel` for every single save. A `BusinessLayerException` is rethrown and propagates out of `Main`.
-4. **Load and print.** `OnLoadedAsync()` fetches active users from `UserService` and appends them to `ShowUsersViewModel.Users`. Then `Main` iterates that collection and writes one `Name: {FirstName} {LastName}` line per entry. Because `Users` was already populated by the per-save `UserChangedMessage` in step 3, `OnLoadedAsync` *re-adds* the same users, so the output contains duplicates: roughly 2 × 100+ names (or more, if any of the 100 adds are rejected as duplicates by `UserService`).
+1. **Build the container** inside a `using` block, calling `CompositionHelper.CreateCompositionContainer(["ConsoleApp1.exe"])`. Passing `["ConsoleApp1.exe"]` tells the helper to skip the program's own executable file when scanning the output directory for assemblies.
+2. **Resolve the feature root**: `container.GetExportedValues<IUserViewModel>().SingleOrDefault()`. A single `IUserViewModel` export is expected; `SingleOrDefault()` implies a second export would itself throw.
+3. **Create 100 users**: for each of 100 iterations, set `FirstName = "Firstname"` and `LastName = "Lastname"` on `AddUserViewModel`, then `await SaveUserAsync()`. So all 100 records written are identical.
+4. **Refresh the list**: `await ShowUsersViewModel.OnLoadedAsync()` loads active users from the service.
+5. **Print** one line per user: `Name: {FirstName} {LastName}`.
 
-### Rough edges
+Notable details:
 
-- The "IUserViewModel not found." throw is unreachable: `SingleOrDefault()` throws on zero matches, so the null branch never executes.
-- The `ConsoleApp1.exe` entry in the ignore list excludes whatever assembly is actually named `ConsoleApp1.exe` from the MEF catalog; with a typical build name (`ConsoleApp1.dll`) the ignore string matches nothing. The comment in the code calls the value invalid, but its net effect depends on the deployed file name rather than on any deliberate exclusion.
-- `Main` ignores `args` entirely, and the 100 saved users are hard-coded literals — the program is a fixed smoke/demo run, not a parameterizable one.
+- No error handling around the 100 saves. `SaveUserAsync` rethrows `BusinessLayerException` (after catching it) and otherwise lets validation-failure paths early-return; an exception from any one save aborts the whole program.
+- The console's stdout also carries diagnostics from inside `CompositionHelper` (one `Console.WriteLine` per assembly that fails to load), intermixed before the user list is printed.
+- The container (and with it the database-backed services) is disposed when the `using` block exits, i.e. immediately after printing.
+
+Rough edges:
+
+- The inline comment says `"ConsoleApp1.exe" is not a valid .net assembly`, but that is not the mechanism: the helper's `ignoreAssemblies` list is a name-based skip filter, so the entry point executable is simply not loaded as a MEF catalog (which is also why the helper later adds the entry assembly separately).
+- The `if (userViewModel == null)` throw is unreachable: `SingleOrDefault()` already throws for zero matches, so the `GetExportedValues<...>().SingleOrDefault()` result is either an instance or a thrown exception, never null.
+- `SaveUserAsync()` clears `FirstName`/`LastName` after each save, which the program overwrites on every loop iteration — harmless here, but it means the program's loop is doing redundant work the view model would otherwise do.

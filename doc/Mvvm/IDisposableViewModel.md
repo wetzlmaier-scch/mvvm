@@ -2,25 +2,25 @@
 
 ### Purpose
 
-A marker interface for view models that own resources requiring cleanup. It exists so code can depend on "this view model is disposable" as a distinct contract, without re-spelling both parent interfaces at each call site.
+This file defines `IDisposableViewModel`, a marker interface in the `Mvvm` project. It exists to let the codebase single out view models that own disposable resources and therefore must be explicitly disposed. The interface itself adds no new members — its entire meaning is the combination of its two parents: a view model (`IViewModel`) that can be disposed (`IDisposable`).
 
 ### Role in the Codebase
 
-It is a contract in the `Mvvm` folder, part of a small interface/base-class hierarchy:
+The `Mvvm` directory holds the framework-agnostic view-model contracts and base classes of the solution, consumed by the `Mvvm.Wpf` and `Mvvm.Winforms` projects. Within it, `IDisposableViewModel` sits alongside `IViewModel`, `IMainViewModel`, and the abstract base classes. It is the contract that lets the disposal machinery in `DisposableViewModelBase` be described as "this view model is disposable" rather than just "this is a view model".
 
-- `IViewModel` (defined in `Mvvm/IViewModel.cs`) — an empty interface over `INotifyPropertyChanged`, the marker for "this is a view model".
-- `IDisposableViewModel` — `IViewModel` plus `System.IDisposable` (BCL). No new members of its own.
-- `DisposableViewModelBase` (defined in `Mvvm/DisposableViewModelBase.cs`) — the abstract class that actually implements the disposal machinery and declares `IDisposableViewModel` explicitly, alongside its inheritance from `ViewModelBase`.
-
-Concretely, `IDisposableViewModel` narrows a type in two ways at once: it is a view model (`IViewModel`), and callers are allowed to call `Dispose()` on it. A view model that holds no resources never needs to implement it. If it were removed, nothing functional breaks immediately — `DisposableViewModelBase` already inherits `IDisposable` through `IDisposableViewModel`, so concrete classes would still be disposable — but the explicit, discoverable contract would be gone, and callers would have to cast to `IDisposable` instead of referencing the type.
+If it were removed, `DisposableViewModelBase` would lose the type through which views and owners can treat a disposable view model uniformly. Nothing else in the repository currently references it directly, so removing it would compile as long as `DisposableViewModelBase` is adjusted — but the explicit distinction between plain and disposable view models would disappear.
 
 ### Relationships
 
-- Extends `IViewModel` (same namespace, `Mvvm/IViewModel.cs`) and the BCL `System.IDisposable`.
-- Implemented by `DisposableViewModelBase`, which is the only type in the repository that references the interface directly.
-
-Callers who depend on it are code that holds a reference to a possibly-resourceful view model and needs to tear it down — for example view-model holders or navigation code that track which view models must be disposed when they are no longer visible.
+- Inherits from `IViewModel` (defined in `Mvvm/IViewModel.cs`), which itself inherits from `System.ComponentModel.INotifyPropertyChanged`.
+- Inherits from `System.IDisposable` (BCL), which contributes the single `Dispose()` member.
+- Implemented by `DisposableViewModelBase` (`Mvvm/DisposableViewModelBase.cs`), the only type in the repository that does so. Callers holding an `IDisposableViewModel` reference — typically a view that hosts the view model — are the code that would call `Dispose()` on it.
 
 ### Behavior & Details
 
-There is no behavior to walk through: the interface body is empty, and everything it implies comes from `IViewModel` and `IDisposable`. The only thing a reader can observe is that any `IDisposableViewModel` can be stored in a `Collection<IDisposable>` (like `DisposableViewModelBase.Disposables`, used for child cleanup) or disposed via a common `IDisposable` reference, without knowing the concrete view model type.
+There is no behavior to walk through: the interface body is empty, and everything it implies comes from `IViewModel` and `IDisposable`. What a reader can observe is that any `IDisposableViewModel` reference is simultaneously:
+
+- a change-notifying view model (settable `INotifyPropertyChanged` contract), and
+- disposable, with `Dispose()` the entry point into the pattern implemented in `DisposableViewModelBase` (idempotent `Dispose(bool)`, a `Disposables` collection for owned resources, a `Disposed` event, and a `CheckIfDisposed()` guard).
+
+A view model that holds no unmanaged or disposable resources does not need to implement this interface; a plain `IViewModel`/`ViewModelBase` view model is never expected to be disposed. The interface is the marker that says "this one is".

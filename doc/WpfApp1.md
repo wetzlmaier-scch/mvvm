@@ -1,51 +1,65 @@
 ### Purpose
 
-`WpfApp1` is the WPF desktop application project within the solution. It serves as the executable host shell that launches the application, bootstraps the MEF (Managed Extensibility Framework) composition container, and displays the main user interface. The contents belong together because they form the thin WPF-specific layer required to run the `UserManagement` business logic on the WPF platform, adhering to the MVVM pattern defined by the `Mvvm.Wpf` library.
+`WpfApp1` is the WPF desktop entry point for a user management application. It serves as the host shell that bootstraps the MEF-based composition container, discovers the application's single module, and displays the main `UserView` window. The directory groups the application's root definition (`App.xaml`/`App.xaml.cs`), the module controller that drives startup, and the primary UI view, keeping the presentation layer separate from the business logic and data access layers it depends on.
 
 ### Software Components
 
-The source code in this directory is divided into two main responsibilities: application bootstrapping and UI presentation.
+The application is built around a standard MVVM pattern orchestrated by the Mvvm library. The components are divided into three functional groups:
 
-*   **Application Entry Point**: Defined by [`App.xaml`](WpfApp1/App.xaml.md) and [`App.xaml.cs`](WpfApp1/App.xaml.cs.md). This component declares `WpfApp1.App` as a subclass of `MvvmApplication`. It contains no logic of its own; its sole purpose is to enable the base class's MEF scanning and lifecycle management.
-*   **Lifecycle Controller**: Located in `Controller/`, specifically `DefaultModuleController.cs`. This class implements `IModuleController` and acts as the bridge between the host application and the business logic. It is responsible for initializing, running, and shutting down the main window.
-*   **User Interface**: Located in `View/`, specifically `UserView.xaml` and `UserView.xaml.cs`. This component provides the main window for the "User Management" feature. The code-behind file registers the window as a MEF export, while the XAML file defines the visual structure and data bindings.
-*   **Configuration & Metadata**: [`AssemblyInfo.cs`](WpfApp1/AssemblyInfo.md) provides WPF theme resource lookup metadata, and [`App.config`](WpfApp1/App.md) holds standard application configuration settings.
+*   **Application Root**: Defined in [App.xaml](WpfApp1/App.xaml.md) and [App.xaml.cs](WpfApp1/App.xaml.cs.md). This partial class inherits from `MvvmApplication`, a base class that handles MEF container setup, module discovery, and exception handling. The `App` class itself contains no logic; it exists solely to bind the XAML root to the C# partial class and apply platform-specific attributes.
+*   **Module Controller**: Located in the `Controller/` subdirectory, specifically [DefaultModuleController](WpfApp1/Controller/DefaultModuleController.md). This class implements the `IModuleController` interface. It is the only module export in the project and acts as the bridge between the host application and the main UI. It injects the main view and view model, then triggers `Show()` on the window during `Run()` and `Close()` during `Shutdown()`.
+*   **Main View**: Located in the `View/` subdirectory, consisting of [UserView.xaml](WpfApp1/View/UserView.md) and [UserView.xaml.cs](WpfApp1/View/UserView.md). `UserView` is the single window presented to the user, containing UI for listing current users and adding new ones. The code-behind exports this window via `IMainView<bool?, double>`, allowing the controller to resolve it. The XAML handles layout and data bindings to view models from the `UserManagement` project.
+
+Supporting files include [App.config](WpfApp1/App.md), which stores the SQL Server connection string for the local development database, and [AssemblyInfo.cs](WpfApp1/AssemblyInfo.md), which configures WPF theme resource locations.
 
 ### Relationships
 
-The architecture relies on MEF to wire the components together at runtime. [`App.xaml`](WpfApp1/App.xaml.md) establishes the application context by inheriting from `MvvmApplication`. Upon startup, `MvvmApplication` scans the application directory for assemblies and uses MEF to discover exported modules.
+The dependency flow is strictly top-down from the WPF host to the MEF modules, and from the Controller to the View.
 
-`DefaultModuleController` is the primary module discovered in this assembly. The MEF container injects `UserView` (as `IMainView`) and `UserViewModel` (from the `UserManagement` project) into `DefaultModuleController`'s constructor. The controller then binds the view model to the view's `DataContext` and manages the window's visibility.
-
-The project file [`WpfApp1.csproj`](WpfApp1/WpfApp1.md) is critical for this discovery mechanism; by referencing `UserManagement`, it ensures the business logic assemblies are copied to the output directory, allowing `MvvmApplication` to find and compose them.
+1.  **Bootstrapping**: The WPF runtime instantiates `App` (derived from `MvvmApplication`). During `OnStartup`, `MvvmApplication` creates a MEF composition container and scans for `IModuleController` exports.
+2.  **Module Execution**: The container discovers `DefaultModuleController`. The host calls `Initialize()` (a no-op here) and then `Run()`.
+3.  **View Binding**: `DefaultModuleController` receives `IMainView<bool?, double>` (resolved as `UserView`) and `IMainViewModel` via constructor injection. It sets the `DataContext` of `UserView` to the `UserViewModel`, activating the data bindings defined in `UserView.xaml`.
+4.  **Data Access**: The `UserViewModel` (external to this directory) relies on the `BusinessLayer`, which reads the `ConnectionString` from [App.config](WpfApp1/App.md) to connect to the local SQL Server database via NHibernate.
 
 ```mermaid
 flowchart TD
-    subgraph "WpfApp1 Project"
-        App["App<br/>(MvvmApplication)"]
+    subgraph "WpfApp1 Host"
+        App["App.xaml / App.xaml.cs<br/>(Inherits MvvmApplication)"]
+        Config["App.config<br/>(Connection String)"]
+    end
+
+    subgraph "WpfApp1/Controller"
         DMC["DefaultModuleController"]
-        UserView["UserView"]
+    end
+
+    subgraph "WpfApp1/View"
+        UserView["UserView<br/>(Main Window)"]
     end
 
     subgraph "External Dependencies"
-        UserVM["UserViewModel<br/>(UserManagement)"]
+        MvvmLib["Mvvm.Wpf<br/>(MvvmApplication)"]
+        UserMgmt["UserManagement<br/>(View Models)"]
+        DataLayer["BusinessLayer / DataAccess<br/>(NHibernate / SQL)"]
     end
 
-    App -->|Bootstraps & Discovers| DMC
-    DMC -->|Injects via MEF| UserView
-    DMC -->|Injects via MEF| UserVM
-    DMC -->|Binds DataContext| UserView
+    App -->|Hosts & Bootstraps| MvvmLib
+    MvvmLib -->|Discovers & Runs| DMC
+    DMC -->|Injects & Shows| UserView
+    UserView -->|Binds to| UserMgmt
+    UserMgmt -->|Depends on| DataLayer
+    DataLayer -->|Reads| Config
 ```
 
 ### Rough edges
 
-The `App` class inherits error messages from `MvvmApplication` that are written in German, which may cause unexpected UI text in English-speaking environments. Additionally, the `[SupportedOSPlatform]` attribute is declared redundantly in both `App.xaml.cs` and the base `MvvmApplication` class.
+*   The `[assembly: SupportedOSPlatform("windows")]` attribute is defined in both `App.xaml.cs` and the external `Mvvm.Wpf/MvvmApplication.cs`. While the compiler accepts this redundancy, it is unnecessary duplication.
+*   `UserView.xaml` contains dead code: a `MyDebugConverter` resource that is only referenced in commented-out markup.
+*   Validation error handling in `UserView.xaml` is inconsistent; the "First Name" field uses an inline error template, while the "Last Name" field uses a tooltip.
 
 ## Contents
 - [App.config](WpfApp1/App.md)
 - [App.xaml](WpfApp1/App.xaml.md)
 - [App.xaml.cs](WpfApp1/App.xaml.cs.md)
 - [AssemblyInfo.cs](WpfApp1/AssemblyInfo.md)
-- [WpfApp1.csproj](WpfApp1/WpfApp1.md)
 - [Controller/](WpfApp1/Controller.md)
 - [View/](WpfApp1/View.md)

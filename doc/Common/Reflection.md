@@ -1,40 +1,47 @@
 ### Purpose
 
-The `Common/Reflection` directory provides lightweight utilities for inspecting assembly metadata and file locations within the .NET ecosystem. It exists to centralize reflection-heavy logic that is otherwise verbose to write, ensuring that UI, logging, and composition layers can retrieve assembly details without duplicating `Attribute.GetCustomAttribute` boilerplate. This directory contains only source code, specifically the `AssemblyHelper` class.
+`Common/Reflection` provides static utilities for inspecting loaded assemblies, specifically to retrieve file paths, embedded icons, and standard assembly attributes like version and company. It exists to centralize `System.Reflection` boilerplate, preventing duplicate `Attribute.GetCustomAttribute` lookups and path parsing logic throughout the application.
 
 ### Software Components
 
-The directory contains a single static class, `AssemblyHelper`, located in [AssemblyHelper.cs](Common/Reflection/AssemblyHelper.md). This class serves as the sole component here, offering stateless, pure-function utilities.
+The directory contains a single source file, `AssemblyHelper.cs`, which defines the static class `AssemblyHelper`. This class acts as a pure helper layer with no internal dependencies, relying only on framework namespaces like `System.Reflection`, `System.IO`, and `System.Drawing`.
 
-`AssemblyHelper` groups its methods into three distinct responsibilities:
-*   **File System Utilities:** Methods like `GetAssemblyFileName` and `GetApplicationDirectory` resolve the physical location of executing or entry assemblies. The `Extensions` property lists valid assembly file types (`.dll`, `.exe`) for file discovery.
-*   **Metadata Accessors:** A set of methods (`GetAssemblyCompany`, `GetAssemblyProduct`, etc.) extracts standard assembly attributes, returning empty strings if the attribute is missing to simplify caller logic.
-*   **Application Resources:** `LoadApplicationIcon` specifically targets the entry assembly to retrieve an embedded application icon, designed for use by WPF main view models.
+The components within this class group into three distinct responsibilities:
+
+*   **File Location Utilities:** Methods like `GetAssemblyFileName` and `GetApplicationDirectory` resolve the physical file system paths of assemblies. These are critical for assembly discovery scenarios.
+*   **Metadata Accessors:** A set of methods such as `GetAssemblyCompany`, `GetAssemblyVersion`, and `GetAssemblyFileVersion` retrieve specific assembly attributes. They uniformly return `string.Empty` if an attribute is missing, simplifying error handling for callers.
+*   **Icon Loading:** `LoadApplicationIcon` is unique in that it targets the entry assembly (rather than the executing assembly) to find and load an embedded `.ico` resource.
+
+[AssemblyHelper](Common/Reflection/AssemblyHelper.md) is the sole component here. It does not load assemblies itself but operates on `Assembly` instances passed by the caller, except for the icon loader which fetches the entry assembly directly.
 
 ### Relationships
 
-The dependency direction is strictly unidirectional: `AssemblyHelper` depends only on the .NET Framework (`System.Reflection`, `System.IO`, `System.Drawing`) and has no internal repository dependencies. However, it is a foundational utility for other parts of the codebase.
+`AssemblyHelper` is consumed by two primary areas of the codebase:
 
-`Common/Composition/CompositionHelper.cs` relies on `AssemblyHelper.Extensions` to identify candidate assemblies for MEF composition. `Mvvm/MainViewModelBase.cs` calls `AssemblyHelper.LoadApplicationIcon` during construction to set the application window's icon. The metadata accessor methods currently have no in-repository callers but provide a general-purpose API for any module needing assembly identity details.
+1.  **`Common/Composition/CompositionHelper.cs`**: This is the main internal consumer. It uses `AssemblyHelper.Extensions` to filter files (`.dll`, `.exe`) when building a MEF `AggregateCatalog`. It also relies on `GetApplicationDirectory` to determine where to scan for these candidate assemblies.
+2.  **`Mvvm/MainViewModelBase.cs`**: This class calls `LoadApplicationIcon()` in its constructor to set the WPF window icon.
+
+The dependency direction is strict: callers depend on `AssemblyHelper`, but `AssemblyHelper` depends on nothing else in the application. It is a leaf node in the dependency graph.
 
 ```mermaid
 flowchart TD
     subgraph "Common/Reflection"
-        AH["AssemblyHelper<br/>(Static Class)"]
+        AH["AssemblyHelper<br/>(Static Utilities)"]
     end
-
-    subgraph "Consumers"
-        CH["CompositionHelper.cs"]
-        MVB["MainViewModelBase.cs"]
+    
+    subgraph "Callers"
+        CH["CompositionHelper<br/>(MEF Composition)"]
+        MVVB["MainViewModelBase<br/>(UI Initialization)"]
     end
-
-    CH -->|uses Extensions| AH
-    MVB -->|calls LoadApplicationIcon| AH
+    
+    CH -->|Uses Extensions &<br/>GetApplicationDirectory| AH
+    MVVB -->|Uses LoadApplicationIcon| AH
 ```
 
 ### Rough edges
 
-`GetAssemblyFileName` assumes `assembly.Location` is a valid file URI, which fails for dynamic or in-memory assemblies where `Location` is empty. Additionally, `LoadApplicationIcon` returns an unmanaged `Icon` object that the known caller (`MainViewModelBase`) does not dispose, resulting in a minor resource leak per app launch.
+*   `GetAssemblyFileName` will throw a `UriFormatException` if called on an in-memory or dynamic assembly where `Assembly.Location` is empty.
+*   The method `GetPublicKeyToken` is misleadingly named; it serializes the full public key, not the 16-byte token typically associated with strong-name strings.
 
 ## Contents
 - [AssemblyHelper.cs](Common/Reflection/AssemblyHelper.md)

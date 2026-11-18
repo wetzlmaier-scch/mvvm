@@ -1,52 +1,42 @@
-I have everything I need. Here is the documentation.
-
----
-
 # `Logging/ILoggingService.cs`
 
 ### Purpose
 
-This interface is the project's logging contract. It extends `Microsoft.Extensions.Logging.ILogger` with a set of convenience methods so callers can write a log line in one call — `logger.LogWarning("Failed to save {Id}", id)` — without building an `EventId`, choosing a level-specific `ILogger.Log` overload, or wrapping anything. The reason it exists alongside `ILogger` is ergonomics: `ILogger` only exposes the generic `Log<TState>(LogLevel, EventId, TState, Exception?, formatter)` method, which is awkward to call by hand. This interface turns "log this at this level, maybe with this exception" into a directly callable method for each level.
+This file defines `ILoggingService`, the logging contract that the rest of the application logs through. It extends `Microsoft.Extensions.Logging.ILogger` (an external library type, not defined in this repository) with one argument-style improvement: instead of the framework's struct-based `Log<TState>(LogLevel, EventId, TState, ...)` call shape, it offers string-message-plus-`params object?[] args` overloads. A caller can write `LoggingService.LogError(e, "Error saving user")` instead of dealing with `TState` and a formatter delegate.
+
+For each of the six `LogLevel` values — `LogDebug`, `LogTrace`, `LogInformation`, `LogWarning`, `LogError`, `LogCritical` — the interface declares four overloads, each of which is an optional combination of `EventId` and `Exception` leading parameters, e.g.:
+
+```csharp
+void LogError(EventId eventId, Exception? exception, string? message, params object?[] args);
+void LogError(EventId eventId, string? message, params object?[] args);
+void LogError(Exception? exception, string? message, params object?[] args);
+void LogError(string? message, params object?[] args);
+```
+
+It also declares three `Log` overloads that take the level explicitly (`Log(LogLevel, ...)`, `Log(LogLevel, EventId, ...)`, `Log(LogLevel, Exception?, ...)`) for cases where the level is not known at the call site.
 
 ### Role in the Codebase
 
-`ILoggingService` is the abstraction that the rest of the application logs through; `Logging/LoggingService.cs` is its concrete implementation (backed by Serilog, writing to a rolling daily file and to the debug console). The interface is injected via MEF — `LoggingService` is marked `[Export(typeof(ILoggingService))]` — and the consuming classes declare an `ILoggingService LoggingService { get; set; }` property and import it.
+This is the facade of the `Logging` project, a small class library. The concrete implementation is `LoggingService` in `Logging/LoggingService.cs`, which is backed by Serilog (rolling daily file plus a console sink). `LoggingService` carries `[Export(typeof(ILoggingService))]` and is wired to consumers via MEF (`System.ComponentModel.Composition`), so any class with an `[Import]`-marked `ILoggingService` property receives the Serilog-backed instance at composition time.
 
-Callers found in the repository that depend on it:
-
-- `BusinessLayer/UserService.cs` (via `BusinessLayer/IUserService.cs`) — e.g. `LoggingService.LogError(e, "Error saving user")` in its save path
-- `UserManagement/ViewModel/AddUserViewModel.cs` (via `IAddUserViewModel`)
-- `UserManagement/ViewModel/ShowUsersViewModel.cs` (via `IShowUsersViewModel`)
-
-If the interface were removed, those classes could no longer declare their logger dependency, and the MEF export/import contract between `LoggingService` and its consumers would break.
+Consumers depend on this interface rather than `ILogger` directly, which keeps the MEF export point stable: if the underlying engine or sinks change, only `LoggingService` changes. If this interface were removed, `LoggingService` would have nothing to implement and every injected property in `BusinessLayer` and `UserManagement` would break.
 
 ### Relationships
 
-- **Base type:** `Microsoft.Extensions.Logging.ILogger` (from the Microsoft.Extensions.Logging package, not this repo). That is why the interface must also be implemented for `Log<TState>`, `IsEnabled`, and `BeginScope<TState>` — those come from `ILogger` and are satisfied by `LoggingService` delegating to its internal `ILogger`, not by the convenience methods declared here.
-- **Implementation:** `Logging/LoggingService.cs` (`LoggingService : ILoggingService`).
-- **Dependency injection:** MEF (`System.ComponentModel.Composition`). The `[Export(typeof(ILoggingService))]` on `LoggingService` and the `ILoggingService` properties on the consuming classes are how it is wired up.
-- **Callers** assign messages and exceptions directly, e.g. `LoggingService.LogError(e, "Error saving user")`, which maps to the `LogError(Exception?, string?, params object?[])` overload.
+- **Parent type:** `Microsoft.Extensions.Logging.ILogger` (external library). The interface inherits its three core members — `Log<TState>`, `IsEnabled`, `BeginScope<TState>` — which `LoggingService` forwards to a `Microsoft.Extensions.Logging.ILogger` created from `SerilogLoggerFactory`.
+- **Implementation:** `Logging/LoggingService.cs` — the only implementer. Each convenience overload there forwards to the internal `_logger` via `Microsoft.Extensions.Logging.LoggerExtensions.Log` overloads, so message formatting (`{message}` with `args`) and exception handling behave exactly as in the standard framework.
+- **Consumers** (all via MEF-injected `ILoggingService` properties):
+  - `BusinessLayer/IUserService.cs` and `BusinessLayer/UserService.cs` — `UserService` calls `LoggingService.LogError(e, "Error saving user")` when a user save fails.
+  - `UserManagement/ViewModel/IAddUserViewModel.cs` and `AddUserViewModel.cs` — injected and available to the save-command handler.
+  - `UserManagement/ViewModel/IShowUsersViewModel.cs` and `ShowUsersViewModel.cs` — injected, but no call to `LoggingService` appears in `ShowUsersViewModel`, so the import is currently unused there.
 
 ### Behavior & Details
 
-The interface declares no state or logic — it is purely a set of method signatures — but the shape of those signatures is the contract the whole codebase programs against.
-
-For each of the six `LogLevel` values — `LogTrace`, `LogDebug`, `LogInformation`, `LogWarning`, `LogError`, `LogCritical` — there are four overloads, varying in which optional pieces a caller supplies:
-
-1. `(EventId eventId, Exception? exception, string? message, params object?[] args)` — full form
-2. `(EventId eventId, string? message, params object?[] args)` — with an event id but no exception
-3. `(Exception? exception, string? message, params object?[] args)` — with an exception but no event id
-4. `(string? message, params object?[] args)` — message only
-
-`message` uses standard string-formatting placeholders (`{0}`, `{1}`, …) filled by `args`, the same convention as the underlying `ILogger`. All parameters except `message` are nullable; a caller may pass `null` for the exception, the event id, or even the message.
-
-In addition, three `Log` overloads take the `LogLevel` explicitly for cases where the level is not fixed at compile time: `Log(LogLevel, string?, params object?[])`, `Log(LogLevel, EventId, string?, params object?[])`, and `Log(LogLevel, Exception?, string?, params object?[])`.
-
-Because it extends `ILogger`, a consumer of this interface can also use the generic `Log<TState>(LogLevel, EventId, TState, Exception?, Func<TState, Exception?, string>)`, `IsEnabled(LogLevel)`, and `BeginScope<TState>(TState)` — the implementation delegates those to its inner Serilog-backed `ILogger`.
-
-One thing to note for maintainers: the overload sets are not uniform across the `Log` family — the explicit-level `Log` overloads lack the `(LogLevel, EventId, Exception?, string?, …)` combination, so a caller wanting both an event id and an exception at a dynamic level must drop down to the inherited `ILogger.Log<TState>` form.
+- The interface adds no logic of its own; all behaviour lives in `LoggingService`. Notably, `LoggingService` creates its Serilog `ILogger` in a field initializer (not through MEF or a factory), so the sink configuration — output file `Hargassner.Teststand-.log`, `RollingInterval.Day`, retaining 5 files, minimum level `Debug` — is fixed at class construction and not configurable through this interface.
+- Because the interface extends `ILogger`, a consumer can still call the framework's `Log<TState>` method directly, but the intended call style is the string/`params` overloads, which match how every existing call site logs.
+- The `Log(LogLevel, ...)` overloads let a single call site pick the level at runtime; `LoggingService` passes `EventId 0` (or the given `EventId`) when none is supplied.
 
 ### Rough edges
 
-- The four-overload pattern is repeated six times, one per level, and the explicit-level `Log` overloads omit a few combinations (e.g. no `EventId` + `Exception` variant). Adding a new combination requires touching both the interface and `LoggingService`.
-- `message` is typed `string?` yet the methods are used as format strings; there is no `IFormatProvider`/culture parameter, so formatting follows the default culture.
+- `ShowUsersViewModel` imports `ILoggingService` but never uses it — dead injection that a reader may mistake for logging that actually happens there.
+- The interface declares 27 overloads; since `EventId` is `params`-free and the `Exception`/`EventId` overloads never appear at any current call site, the surface is wider than the application actually uses.

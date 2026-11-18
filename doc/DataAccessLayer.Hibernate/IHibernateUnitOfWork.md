@@ -1,32 +1,20 @@
-# `DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs`
-
 ### Purpose
 
-This file defines `IHibernateUnitOfWork`, the NHibernate-specific unit-of-work contract. It exists so callers can depend on a way to control transactions with an explicit `System.Data.IsolationLevel`, which the generic base contract does not provide.
+`DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs` defines `IHibernateUnitOfWork`, the NHibernate-specific unit-of-work contract. It exists because the generic `IUnitOfWork` only allows starting a transaction without choosing its isolation level, and NHibernate's `IBeginTransaction`/`BeginTransaction(IsolationLevel)` supports picking one. This interface adds exactly that capability: `BeginTransaction(IsolationLevel isolationLevel)`, letting callers control how strongly they isolate their reads and writes within a single unit of work.
 
 ### Role in the Codebase
 
-The interface lives in `DataAccessLayer.Hibernate` alongside its implementation `HibernateUnitOfWork` (see `HibernateUnitOfWork.cs`) and the repository types that expose it. It is a small extension point: it narrows the generic `IUnitOfWork` contract (defined in `DataAccessLayer/IUnitOfWork.cs`) for the NHibernate stack. If it were removed, `HibernateUnitOfWork` could no longer be consumed generically, and callers that need a non-default isolation level would have no typed way to ask for one.
+Inside `DataAccessLayer.Hibernate/`, this file is the abstraction layer for transaction management alongside `IHibernateRepository` and `IHibernateRepositoryFactory`. Concrete class `HibernateUnitOfWork` (same directory) is the sole implementation — it wraps an `IStatelessSession` and stores the underlying NHibernate `ITransaction`. Business or service layers depend on `IHibernateUnitOfWork` rather than the concrete type, so they are decoupled from NHibernate specifics. If this interface were removed, `HibernateRepository.UnitOfWork` would need to expose `HibernateUnitOfWork` directly, leaking NHibernate's implementation details up to callers.
 
 ### Relationships
 
-- **Extends** `IUnitOfWork` from the `DataAccessLayer` namespace (`DataAccessLayer/IUnitOfWork.cs`). That base declares `IsInTransaction`, `BeginTransaction()`, `RollBackTransaction()`, `CommitTransaction()`, and (via `IDisposable`) disposal. Everything from the base is inherited by reference; this interface only adds one member.
-- **Implemented by** `HibernateUnitOfWork`, which takes an NHibernate `IStatelessSession` and owns an `ITransaction`.
-- **Exposed by** `HibernateRepository<TKey>` through its `UnitOfWork` property (declared on `IHibernateRepository<TKey>`), which lazily creates a `HibernateUnitOfWork` sharing the repository's session. So a repository is the natural entry point for obtaining the unit of work.
-- **Consumed by business-layer code** — for example `BusinessLayer/UserService.cs` calls `repository.UnitOfWork.BeginTransaction()` before its operations.
+- **Extends** `IUnitOfWork` from `DataAccessLayer/IUnitOfWork.cs`, which itself extends `System.IDisposable` and declares `IsInTransaction`, `BeginTransaction()`, `RollBackTransaction()`, and `CommitTransaction()`. This file contributes exactly one additional member: `BeginTransaction(IsolationLevel isolationLevel)`.
+- **Implemented by** `HibernateUnitOfWork` (`DataAccessLayer.Hibernate/HibernateUnitOfWork.cs`). The implementation uses `System.Data.IsolationLevel` from the `System.Data` namespace, matching the signature declared here.
+- **Consumed via** `IHibernateRepository<TKey>` (`DataAccessLayer.Hibernate/IHibernateRepository.cs`), whose `UnitOfWork { get; }` property returns an `IHibernateUnitOfWork`. `HibernateRepository<TKey>` (same directory) implements this by lazily constructing a `HibernateUnitOfWork(_session)` on first access. Typical callers are repository consumers that want to wrap a series of reads/writes in a transaction with a chosen isolation level.
 
 ### Behavior & Details
 
-The single added member is:
-
-```csharp
-void BeginTransaction(IsolationLevel isolationLevel);
-```
-
-- It starts a transaction at the caller-specified `System.Data.IsolationLevel`. The base interface's parameterless `BeginTransaction()` remains available for the default case; `HibernateUnitOfWork`'s parameterless method simply delegates to this one with `IsolationLevel.ReadCommitted`, so this overload is the single source of truth for actually opening the transaction.
-- The contract for the inherited members comes from `IUnitOfWork`: `IsInTransaction` reports whether a transaction is open, and `RollBackTransaction()`/`CommitTransaction()` end it. The implementation throws `InvalidOperationException` if you begin a second transaction before finishing the first, or try to commit/rollback with none running.
-- Callers that need a stricter or looser isolation level than `ReadCommitted` (for example `Serializable` for a read-modify-write sequence) program against this interface rather than `IUnitOfWork` to reach the overload.
-
-### Rough edges
-
-- The base contract in `IUnitOfWork` has no way to express an isolation level, so every provider-specific unit-of-work interface in this codebase would have to add its own overload; there is no shared mechanism for it.
+- **`void BeginTransaction(IsolationLevel isolationLevel)`** — starts a new NHibernate transaction on the underlying session with the given `System.Data.IsolationLevel`. The inherited `BeginTransaction()` (no argument) starts one at the implementation's default level; this overload is for callers who need, for example, `IsolationLevel.RepeatableRead` or `IsolationLevel.Serializable`.
+- The interface adds no other members. All transaction lifecycle concerns (`IsInTransaction`, `RollBackTransaction()`, `CommitTransaction()`, `Dispose()`) come from `IUnitOfWork`.
+- The contract, as honored by the implementation, is that calling `BeginTransaction` (either overload) while a transaction is already active throws `InvalidOperationException`, and the transaction must be committed or rolled back before the unit of work is disposed. The interface itself is only a marker for the extra capability; the state rules live in `HibernateUnitOfWork`.
+- Because the base `IUnitOfWork` already requires `Dispose()`, any class implementing `IHibernateUnitOfWork` must also implement disposal semantics; the NHibernate implementation disposes the underlying transaction but does not close or dispose the session itself (the session is owned by the repository or factory).

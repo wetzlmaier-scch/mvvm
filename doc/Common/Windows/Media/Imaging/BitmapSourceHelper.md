@@ -2,34 +2,44 @@
 
 ### Purpose
 
-`BitmapSourceHelper` is a small static class that converts images between GDI+ (`System.Drawing.Image` / `Bitmap`) and WPF's `BitmapSource` type system. WPF UI elements bind to `BitmapSource`; Win32/GDI+ icon and image code produces `Bitmap`. This class is the glue in both directions, so callers don't have to know the interop plumbing (`GetHbitmap`, `Imaging.CreateBitmapSourceFromHBitmap`, `BmpBitmapEncoder`) themselves.
+`BitmapSourceHelper` is a small static utility class that converts images between GDI+ (`System.Drawing.Image` / `Bitmap`) and WPF's `BitmapSource` type system, and loads images from file streams. It exists because WPF UI elements bind to `BitmapSource`, while Win32/GDI+ APIs (window icon extraction, file dialogs, interop with unmanaged code) produce `Bitmap` objects — this class is the bridge between the two.
 
 ### Role in the Codebase
 
-It is a shared helper under `Common/Windows/`, the WPF-side of a cross-cutting `Common` namespace. It holds no state — every method is a pure conversion — and it is the only file in its directory. Callers that need to feed a `Bitmap`-based image into WPF, or round-trip a WPF image back to GDI+, go through it instead of repeating the conversion code.
+This file is the only source file in the `Common/Windows/Media/Imaging` directory. It is a leaf-level helper with no dependencies on other custom code in the repository — it relies solely on BCL and WPF imaging APIs. The class is stateless and thread-safe in the trivial sense (no mutable static state).
+
+The only caller in the repository is `Mvvm/MainViewModelBase`, which uses `LoadBitmap(Bitmap)` in its constructor to convert the application's executable icon (obtained via `AssemblyHelper.LoadApplicationIcon()`) into a `BitmapSource` and assign it to the window's `Icon` property. If this class were removed, that icon-loading path would need to be rewritten inline.
 
 ### Relationships
 
-- **Consumed by `Mvvm/MainViewModelBase`** — its constructor loads the application icon via `AssemblyHelper.LoadApplicationIcon()`, converts it with `BitmapSourceHelper.LoadBitmap(icon.ToBitmap())`, and assigns the result to the window's `Icon` property. That is the caller that makes the class's purpose concrete: getting a non-WPF image onto a WPF window.
-- **System APIs it leans on** (all from the BCL / WPF, not the repo):
-  - `System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap` — the actual GDI+ → WPF bridge used by `LoadBitmap(Bitmap)`.
-  - `BmpBitmapEncoder` / `BitmapFrame` — used by `SaveBitmap` to serialize a `BitmapSource` to PNG… specifically to BMP, in a memory stream.
+- **`System.Drawing`** — provides `Image` and `Bitmap` (GDI+ types).
+- **`System.Windows.Interop.Imaging`** — provides `CreateBitmapSourceFromHBitmap`, the API that converts a GDI handle into a WPF `BitmapSource`.
+- **`System.Windows.Media.Imaging`** — provides `BitmapSource`, `BitmapImage`, `BitmapFrame`, and `BmpBitmapEncoder` (WPF imaging types).
+- **Caller**: `Mvvm/MainViewModelBase` (via `using Common.Windows.Media.Imaging`).
 
 ### Behavior & Details
 
-Four conversion entry points, all null-tolerant (a null input yields a null result except where noted):
+The class exposes five methods, all `public static`:
 
-- **`LoadImage(Image? source)`** — takes any GDI+ `Image` and wraps it in a `new Bitmap(source)` before delegating to `LoadBitmap(Bitmap)`. Use this when you only have an `Image` (e.g. from an icon handle) and don't need the `Bitmap` itself.
+**`LoadImage(Image? source)`**
+Null-pass-through. If `source` is null, returns null. Otherwise wraps the `Image` in a new `Bitmap` (GDI+ requires this to call `GetHbitmap`) and delegates to `LoadBitmap(Bitmap)`.
 
-- **`LoadBitmap(Bitmap? source)`** — the core GDI+ → WPF conversion. It extracts the bitmap's HBITMAP handle via `GetHbitmap()` and hands it to `CreateBitmapSourceFromHBitmap` with an empty `Int32Rect` and `FromEmptyOptions()`. One caveat: `GetHbitmap()` returns a GDI handle that is never freed here (no corresponding `DeleteObject`), so callers that convert many images through this method should be aware each call leaks one HBITMAP until process exit.
+**`LoadBitmap(Bitmap? source)`**
+Null-pass-through. If non-null, calls `source.GetHbitmap()` to obtain a GDI handle, then passes it to `Imaging.CreateBitmapSourceFromHBitmap` to produce a WPF `BitmapSource`. The `Int32Rect.Empty` argument means "use the full bitmap," and `FromEmptyOptions()` means "default pixel format and color context."
 
-- **`SaveBitmap(BitmapSource? source)`** — the reverse direction: encodes the `BitmapSource` as a BMP in a `MemoryStream`, rebuilds a GDI+ `Bitmap` from the stream, and wraps it once more in a fresh `Bitmap`. The double wrap discards the intermediate and guarantees an owned `Bitmap` rather than one still tied to the stream. The encoder is a `BmpBitmapEncoder`, so the intermediate representation is always BMP regardless of the source's native format.
+**`SaveBitmap(BitmapSource? source)`**
+The reverse direction. Null-pass-through. Encodes the `BitmapSource` as a BMP into a `MemoryStream` via `BmpBitmapEncoder`, then reads that stream back into a GDI+ `Bitmap`. Returns a new `Bitmap` wrapping the decoded one.
 
-- **`LoadBitmap(string filename)` / `LoadBitmap(Stream stream)`** — load a file directly into a WPF `BitmapSource`. These go through a different path than the `Bitmap` overloads: they construct a `BitmapImage` with `BeginInit`/`EndInit` and set `CacheOption = BitmapCacheOption.OnLoad`. That flag is important — it forces the full image data to be decoded and cached in memory during `EndInit`, so the returned `BitmapImage` no longer depends on the stream (or file) staying open. Note the file-based overload opens the stream with `File.OpenRead` inside a `using` block, so the file handle is released by the time the method returns, which is only safe because of the `OnLoad` cache option.
+**`LoadBitmap(string filename)`**
+Opens the file for reading and delegates to the `Stream` overload. Note: this overload returns a non-nullable `BitmapSource` and will throw (`FileNotFoundException`, etc.) if the file is missing or unreadable — it does not do null-checks the way the `Bitmap` overloads do.
 
-Two small asymmetries are worth knowing: the `Image`/`Bitmap` overloads are nullable-annotated and return `BitmapSource?`, while the `string`/`Stream` overloads declare a non-nullable `BitmapSource` and will throw (`FileNotFoundException` / `ArgumentException`) on bad input instead of returning null.
+**`LoadBitmap(Stream stream)`**
+Creates a `BitmapImage`, sets `CacheOption` to `OnLoad` (so the entire image is decoded into memory immediately and the stream can be closed), assigns the stream, and calls `BeginInit`/`EndInit` to trigger the decode. Returns the loaded `BitmapImage` (which is a `BitmapSource`).
 
-### Rough edges
+### Rough Edges
 
-- `LoadBitmap(Bitmap)` never releases the HBITMAP obtained from `GetHbitmap()` — a native handle leak per call (see above).
-- `SaveBitmap` always routes through BMP encoding even when the caller might want a lossless format like PNG, so quality/format of the round-tripped image is fixed regardless of the `BitmapSource` it started from.
+`LoadBitmap(Bitmap)` calls `GetHbitmap()` but never calls `DeleteObject` on the resulting HBITMAP. Each call therefore leaks one native GDI handle for the lifetime of the process. In the current codebase this path is hit once at startup for the window icon, so the leak is bounded — but any future caller that invokes this method repeatedly (e.g. in a loop or per user action) would accumulate handles until the process runs out of GDI objects.
+
+`SaveBitmap` allocates a full in-memory BMP round-trip and returns `new Bitmap(bitmap)` — an unnecessary copy of the `Bitmap` just constructed from the stream. The extra allocation is harmless but the returned `Bitmap` is a GDI+ object the caller must dispose.
+
+`LoadBitmap(string filename)` declares a non-nullable return type, so a missing file surfaces as an exception rather than a null — inconsistent with the other `LoadBitmap` overloads that return null on null input.

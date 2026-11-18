@@ -1,28 +1,25 @@
-### Purpose
+# `UserChangedMessage` (`UserManagement/Messaging/UserChangedMessage.cs`)
 
-`UserChangedMessage` (`UserManagement/Messaging/UserChangedMessage.cs`) is a message class that announces a change to a user — added, updated, or deleted — to other parts of the UserManagement module. It exists so that screens displaying user data can stay in sync with the user service without directly referencing it: a view model performs the change and sends a message; any view model that cares receives it through the CommunityToolkit `WeakReferenceMessenger`.
+### Purpose
+`UserChangedMessage` is the message type that announces a change to a user — added, updated, or deleted — to other parts of the UserManagement module. It exists so that sibling view models can stay in sync without referencing each other: `AddUserViewModel` broadcasts one of these messages after saving a user, and `ShowUsersViewModel` listens for them to keep its displayed user list current.
 
 ### Role in the Codebase
-
-This class is the messaging contract of the `UserManagement/Messaging` folder, alongside its sibling `UserChangeType` enum (`UserManagement/Messaging/UserChangeType.cs`), which defines the three operations: `Added`, `Updated`, `Deleted`. It is a data model for events, not logic — its entire job is to carry a `UserModel` plus the kind of change that happened to it. Removing it would break both the sender (`AddUserViewModel`) and the receiver (`ShowUsersViewModel`), which both reference it directly.
+This class is the single event payload in the `UserManagement/Messaging` folder; its only companion there is the `UserChangeType` enum, which names the kinds of change a message can carry. Together they are the "event contract" layer of the module: everything about what a user change looks like is defined here, while the sending and receiving logic lives in the view models. Nothing in the module's messaging can function without this class, since it is both the type that `WeakReferenceMessenger` dispatches and the type receivers register against.
 
 ### Relationships
-
-- **Base type:** `ValueChangedMessage<UserModel>` from the external CommunityToolkit.Mvvm library. It supplies the `Value` property holding the `UserModel`, so `UserChangedMessage` only adds the change-type dimension.
-- **`UserChangeType`** (same folder) — the enum naming the operation.
-- **`UserModel`** (`UserManagement/Model/UserModel.cs`) — the payload, an `ObservableObject`-based model of a user.
-- **Sender:** `UserManagement/ViewModel/AddUserViewModel.cs` builds the message after creating a user:
-  ```csharp
-  WeakReferenceMessenger.Default.Send(new UserChangedMessage(UserChangeType.Added, userModel));
-  ```
-- **Receiver:** `UserManagement/ViewModel/ShowUsersViewModel.cs` registers in its constructor and reacts by appending `message.Value` to its `Users` collection when the type is `Added`.
+- **Base type:** `ValueChangedMessage<UserModel>` from the external CommunityToolkit.Mvvm library. The base class supplies the `Value` property holding the `UserModel`, so `UserChangedMessage` only adds the change-type discriminator on top.
+- **`UserChangeType`** (`UserManagement/Messaging/UserChangeType.cs`) — an enum with `Added`, `Updated`, and `Deleted`. It is the constructor parameter and the value of the `UserChangeType` property.
+- **`UserModel`** (`UserManagement/Model/UserModel.cs`) — the user instance the message carries; it is passed straight through to the base class.
+- **Sender:** `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`) constructs `new UserChangedMessage(UserChangeType.Added, userModel)` in `SaveUserAsync()` and sends it via `WeakReferenceMessenger.Default.Send(...)` after `UserService.AddUser` succeeds.
+- **Receiver:** `ShowUsersViewModel` (`UserManagement/ViewModel/ShowUsersViewModel.cs`) registers for `UserChangedMessage` in its constructor and switches on `message.UserChangeType`, appending `message.Value` to its `Users` collection for `Added`.
 
 ### Behavior & Details
+The class is a primary constructor plus one property; it holds no state beyond what the base class and the constructor parameters provide.
 
-- The primary primary-constructor takes the change type and the user. The convenience constructor that takes only a `UserModel` defaults to `UserChangeType.Added`. Any call site relying on "no type" therefore silently publishes an `Added` event — use the explicit constructor for anything else.
-- `UserChangeType` is a read-only property (`{ get; }`) initialized once via the primary constructor; the message is immutable.
-- `message.Value` (inherited from `ValueChangedMessage<UserModel>`) carries the user payload.
+- **Primary constructor** `UserChangedMessage(UserChangeType changeType, UserModel value)` forwards `value` to `ValueChangedMessage<UserModel>` and stores `changeType` in the read-only `UserChangeType` property.
+- **Convenience constructor** `UserChangedMessage(UserModel value)` delegates to the primary one with `UserChangeType.Added`. No caller in this repository currently uses the overload; it encodes "a bare `UserModel` means a new user" as the default.
+- **`UserChangeType` property** is get-only and set once at construction, so the kind of change is fixed for the message's lifetime.
 
-### Rough edges
+Because `WeakReferenceMessenger` references recipients weakly, the receiver view model must stay alive externally (via MEF composition) for messages to arrive; the message itself has no lifetime or disposal behavior.
 
-`ShowUsersViewModel`'s handler throws `NotImplementedException` for `Updated` and `Deleted`, so only the `Added` path is actually handled today despite the enum advertising all three. Also, the single-argument constructor defaulting to `Added` can mask intent if a future sender forgets to pass the type.
+Note that the enum's `Updated` and `Deleted` cases are part of the contract but currently unhandled on the receiving side — `ShowUsersViewModel`'s handler throws `NotImplementedException` for both, so sending a message of those types today would fail in the handler rather than update the UI.

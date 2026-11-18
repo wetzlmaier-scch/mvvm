@@ -1,45 +1,55 @@
-# Common/Composition/CompositionHelper.cs
+# `Common/Composition/CompositionHelper.cs`
 
 ### Purpose
 
-`CompositionHelper` is a static helper that builds a MEF (`System.ComponentModel.Composition`) `CompositionContainer` from all loadable assemblies next to the running application. It exists so that the application's modules can be discovered and wired up automatically at startup: instead of registering each export/import by hand, the container is populated from every `.dll` and `.exe` in the application directory (or its subdirectories), and the app then pulls out whatever it needs — in practice the `IModuleController` exports — from it.
+`CompositionHelper` is a static class that builds a MEF (`System.ComponentModel.Composition`) `CompositionContainer` from every loadable assembly in the application's directory. It exists so the host applications in this repository (`WinFormsApp1`, `WpfApp1` via `Mvvm.Wpf`, `ConsoleApp1`) can bootstrap their module architecture without each one reimplementing the same assembly-discovery-and-cataloging logic. The returned container is what the hosts query for their `IModuleController` exports, i.e. the application's plugins.
 
 ### Role in the Codebase
 
-This class is the composition bootstrap for the solution. It lives in `Common` and is consumed by the host applications:
-
-- `Mvvm.Wpf/MvvmApplication.cs` calls `CreateCompositionContainer(moduleAssemblies, ignoreAssemblies, searchOption)` in `OnStartup`, then resolves `IModuleController` exports, calls `Initialize()` and `Run()` on them, and disposes the container in `OnExit`.
-- `WinFormsApp1/Program.cs` calls the no-argument overload in `Main` and follows the same module-controller pattern.
-- `ConsoleApp1/Program.cs` calls it with an ignore list and resolves a specific view-model export (`IUserViewModel`) directly.
-
-If it were removed, the hosts would have no way to assemble the container from the directory of assemblies, and module discovery would have to be replaced by explicit registration.
+`CompositionHelper` sits in the `Common` project's `Composition` subdirectory and is the sole file there. It is the shared bootstrapping helper: every host project references `Common` and calls `CreateCompositionContainer(...)` at startup, before resolving any exports. If it were removed, each host would have to build its own `AggregateCatalog` from disk, and none of the hosts' module discovery would work as-is. It is pure plumbing — it contains no domain logic of its own; all behaviour flows through the container it returns.
 
 ### Relationships
 
-- Depends on `Common.Reflection.AssemblyHelper` (in `Common/Reflection/AssemblyHelper.cs`), used only for its `Extensions` constant, the `string[] { ".dll", ".exe" }` that determines which files in the directory are considered candidate assemblies.
-- Everything else is from `System.ComponentModel.Composition.Hosting` (external, .NET's MEF): `AggregateCatalog`, `AssemblyCatalog`, `CompositionContainer`, `CompositionBatch`.
-- The returned `CompositionContainer` is what all hosts use for `GetExportedValues<...>`; callers treat it as disposable (both hosts dispose it on shutdown).
+- **`Common.Reflection.AssemblyHelper`** (`Common/Reflection/AssemblyHelper.cs`) — the only in-repo dependency. `CompositionHelper` uses `AssemblyHelper.Extensions` (the constant `{ ".dll", ".exe" }`) to decide which file types count as candidate assemblies.
+- **`System.ComponentModel.Composition.Hosting`** (NuGet package `System.ComponentModel.Composition`, pinned to 10.0.6 in the host projects) — source of `CompositionContainer`, `AggregateCatalog`, `AssemblyCatalog`, `CompositionBatch`. This is the framework being wrapped, not code in this repository.
+- **Callers** —
+  - `WinFormsApp1/Program.cs` calls the parameterless `CreateCompositionContainer()` in `Main()`, then resolves `IModuleController` exports and drives `Initialize()`/`Run()` on them.
+  - `Mvvm.Wpf/MvvmApplication.cs` calls the full overload in `OnStartup`, passing module and ignore assembly lists through from its constructor, then does the same `Initialize()`/`Run()` sequence and additionally `Shutdown()`s each controller in `OnExit` and disposes the container.
+  - `ConsoleApp1/Program.cs` calls `CreateCompositionContainer(["ConsoleApp1.exe"])` — i.e. the *ignore* overload — which is a mistake; see Rough edges.
+- **What the hosts depend on from the container:** `IModuleController` (defined in `Mvvm/IModuleController.cs`), exported by classes like `WinFormsApp1/Controller/DefaultModuleController.cs` and `WpfApp1/Controller/DefaultModuleController.cs`. Those classes are invisible to this file; it only guarantees they become discoverable by being placed in a catalog that the container can see.
 
 ### Behavior & Details
 
-There are two parameterless/thin overloads that just delegate to the real implementation `CreateCompositionContainer(string[] moduleAssemblies, string[] ignoreAssemblies, SearchOption searchOption)`. All three share one behavior; the overloads only let callers skip the list(s) they don't need.
+There are three overloads of `CreateCompositionContainer`, all static, all returning a ready-to-use `CompositionContainer`:
 
-The full overload works in four stages:
+- `CreateCompositionContainer()` — no ignore list, top-level directory only.
+- `CreateCompositionContainer(string[] ignoreAssemblies, SearchOption)` — same, but skips the named assemblies.
+- `CreateCompositionContainer(string[] moduleAssemblies, string[] ignoreAssemblies, SearchOption)` — the real implementation; the other two delegate to it with empty arrays.
 
-1. **Collect candidate files.** It takes the directory of `Assembly.GetExecutingAssembly()` (i.e. the directory containing the `Common` assembly, which in practice is the application's output directory) and enumerates files matching `*` + each extension in `AssemblyHelper.Extensions` (`*.dll`, `*.exe`) using the given `searchOption` (`TopDirectoryOnly` by default, or `AllDirectories` if a caller wants subdirectories).
+The full implementation proceeds in five steps:
 
-2. **Load and catalog each file.** For every file not in `ignoreAssemblies` (matched case-insensitively by file name), it calls `Assembly.LoadFrom`. Two bookkeeping rules apply:
-   - If the loaded assembly's location is already in the catalog set, it throws `InvalidOperationException` ("Assembly ... is already loaded") — this throw is inside the per-file `try`, so it is caught and only printed to the console; the loop then moves on.
-   - Otherwise it adds an `AssemblyCatalog` to the `AggregateCatalog` and records the assembly's location (lower-cased) in a `HashSet`.
-   - Any other exception (a corrupt file, a bad assembly such as the `ConsoleApp1.exe` case in the sample, etc.) is also caught and its message is written to `Console.WriteLine` — a failing assembly is silently skipped from the container rather than aborting startup.
+1. **Enumerate candidate files.** It takes the directory of `Assembly.GetExecutingAssembly().Location` (the `Common` assembly's own directory, which in the hosts is the same as the output directory) and enumerates every `*.dll` and `*.exe` matching the given `SearchOption` (default `TopDirectoryOnly`). File names are compared against `ignoreAssemblies` case-insensitively; ignored files are skipped entirely.
 
-3. **Guarantee the Common and entry assemblies are present.** After the file scan, it adds the executing assembly and, if different, the entry assembly (`Assembly.GetEntryAssembly()`) to the catalog, again only if their locations aren't already recorded. This matters because the scan depends on the `Common` assembly sitting next to the executable, and the entry assembly's location can in edge cases not be one of the enumerated files.
+2. **Load each assembly and add it to an `AggregateCatalog`.** Each candidate is `Assembly.LoadFrom`'d and wrapped in an `AssemblyCatalog`. A `HashSet<string>` of lower-cased `assembly.Location` values prevents the same physical assembly from being cataloged twice; a duplicate triggers an `InvalidOperationException`, which is swallowed by the `catch (Exception)` that surrounds the whole load. On any failure (bad PE, load conflict, etc.) only `ex.Message` is written to `Console` and the loop continues — so a single broken DLL does not stop startup, but it also does not surface any stack trace.
 
-4. **Load module assemblies and self-export the container.** For each name in `moduleAssemblies` it loads the assembly with `Assembly.LoadFrom` and adds it to the catalog. Note this stage is *not* in a try/catch: an unloadable module assembly, or one already present, throws `InvalidOperationException` and propagates to the caller. Finally it creates the `CompositionContainer`, adds the container itself as an exported value via a `CompositionBatch` (so other components can import the container), composes the batch, and returns the container.
+3. **Ensure the executing assembly is cataloged.** If `Common`'s own assembly was not picked up in step 2 (which can happen if its file was in the ignore list), it is added explicitly, so exports that live in `Common` itself remain reachable.
 
-A caveat worth knowing: `moduleAssemblies` entries are loaded with `Assembly.LoadFrom` but the catalog entry is built from the *name string*, not the loaded `Assembly` object (unlike the file-scan stage). The comment in the code refers to App.config as the source for module assemblies, but in the current code no caller actually passes a non-empty `moduleAssemblies` — `WpfApp1.App` inherits `MvvmApplication`'s parameterless constructor, so both arrays are empty in practice.
+4. **Add the entry assembly** (`Assembly.GetEntryAssembly()`) if present and not yet cataloged, so the host project's own exports (e.g. `DefaultModuleController`) are visible to the container.
+
+5. **Load the explicit `moduleAssemblies`.** These are passed as file paths to `Assembly.LoadFrom`. A duplicate check throws `InvalidOperationException("Assembly is already loaded.")` — but note the catalog entry is added with `new AssemblyCatalog(moduleAssembly)`, passing the *path string* again rather than the already-loaded `Assembly` instance, unlike step 2. (See Rough edges.)
+
+Finally it constructs the `CompositionContainer` over the aggregate catalog, and self-composes one value: the container itself, exported via a `CompositionBatch`. This is the mechanism that lets any MEF part in any loaded assembly write `Import CompositionContainer` to get a reference to the container (e.g. for runtime composition). Without this batch no exports would be discoverable, because at least one composition pass has to be triggered.
+
+Notable edge cases and caveats:
+
+- **Directory scope is fixed.** Discovery is anchored to `Common`'s location, not the process's working directory. This means the helper assumes `Common.dll` sits next to the other assemblies — true for all current hosts, but it would silently find nothing useful if the layout ever changed.
+- **Error handling is console-only.** A WPF host calling this gets diagnostic output that is invisible at runtime; `MvvmApplication` additionally relies on its own `ReflectionTypeLoadException` catch around `GetExportedValues` for the fatal cases.
+- **Case-insensitive ignore matching** uses the raw file name, not the assembly identity, so ignoring "foo.dll" does not ignore a renamed file that loads to the same assembly — and vice versa.
+- **`moduleAssemblies` are loaded before the duplicate-`catalog` check adds them to the `assemblies` set:** the set is checked but the assembly is not added to it after a successful module load, so two *different* `moduleAssemblies` entries that resolve to the same file are not caught (only a collision with something cataloged in steps 2–4 is).
 
 ### Rough edges
 
-- Failures in the file-scan loop are only written to the console (`Console.WriteLine`), which in a WPF app goes nowhere a user sees; a missing or broken module assembly can make exports silently absent until a later `GetExportedValues` fails or finds nothing.
-- The "already loaded" `InvalidOperationException` thrown inside the `try` is swallowed by its own `catch`, so a genuine duplicate-assembly problem produces just a console line.
+- **`new AssemblyCatalog(moduleAssembly)` in step 5 takes a path string, not the loaded `Assembly`.** `AssemblyCatalog(string)` re-resolves the path and may load a second copy of the module assembly (or throw if the file has moved), whereas steps 2 and 4 correctly pass the `Assembly` instance. A path typo also produces a confusing load error at composition time rather than at the `LoadFrom` line.
+- **`ConsoleApp1` passes its own `.exe` filename to the ignore list** — `CreateCompositionContainer(["ConsoleApp1.exe"])` — but the method's ignore matching compares against assembly *file names on disk*, and the entry assembly is added in step 4 regardless; the ignore entry here has no effect and the comment in `ConsoleApp1/Program.cs` ("the ConsoleApp1.exe is not a valid .net assembly") suggests the author was confused about which overload was being called. The overload chosen takes `ignoreAssemblies`, not `moduleAssemblies`.
+- **The `catch (Exception)` around per-file loading swallows `InvalidOperationException` from the duplicate check** and everything else (including `FileLoadException`, `BadImageFormatException`), printing only the message. A genuinely broken assembly in the output directory is indistinguishable from a duplicate in any log a developer is likely to see.
+- **`Console.WriteLine` as the sole diagnostic channel** is wrong for the WPF host (`MvvmApplication`), where a console is not attached; failures in this method are effectively silent there.

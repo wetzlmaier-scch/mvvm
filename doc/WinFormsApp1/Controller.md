@@ -1,45 +1,51 @@
 ### Purpose
 
-This directory serves as the WinForms host adapter for the application. It contains the single controller that bridges the generic Mvvm framework with the specific WinForms user interface. Its sole responsibility is to manage the application lifecycle within this specific UI technology, allowing `Program.cs` to treat the WinForms host as a swappable module.
+The `WinFormsApp1/Controller` directory contains the application's module controller, which acts as the bridge between the WinForms host and the MVVM architecture. It holds a single source file that implements the `IModuleController` lifecycle contract, allowing the shared `Mvvm` project to discover and drive the application's startup and shutdown via MEF.
 
 ### Software Components
 
-The directory contains one primary component:
+The directory consists of a single component:
 
-*   **`DefaultModuleController.cs`**: This is the concrete implementation of the `IModuleController` interface. It is exported via MEF so that the application entry point can discover and instantiate it. This class acts as the glue between the abstract framework interfaces and the concrete WinForms types (`UserForm` and `UserViewModel`). It handles the initialization, execution, and theoretical shutdown of the WinForms application loop.
+*   **`DefaultModuleController`**: Located in `DefaultModuleController.cs`, this class is the sole `IModuleController` implementation in the project. It is responsible for composing the main view (`UserForm`) and view model (`UserViewModel`) and managing the application's execution loop. For more detailed class documentation, see [DefaultModuleController](WinFormsApp1/Controller/DefaultModuleController.md).
 
 ### Relationships
 
-`DefaultModuleController` depends heavily on the `Mvvm` framework project. It implements `IModuleController`, which dictates the `Initialize`, `Run`, and `Shutdown` lifecycle methods. It receives `UserForm` and `UserViewModel` via constructor injection, relying on their `[Export]` attributes to satisfy the interface contracts defined in `Mvvm`.
+`DefaultModuleController` sits at the intersection of the application host and the MVVM layers. It does not contain business logic itself but orchestrates the components that do.
 
-The dependency direction is strictly one-way: `Program.cs` calls into this controller, which in turn calls into the View and ViewModel. The controller does not define the logic for the form or the data; it merely orchestrates their presentation and lifetime. Because this directory contains only one file with no internal sub-components, the "relationship" is primarily external: this file is the isolated point of contact between the generic `Program` entry point and the specific WinForms implementation.
+*   **MEF Composition**: `Program.Main` uses MEF to locate `DefaultModuleController` by its `IModuleController` export. The controller's constructor accepts `IMainView<DialogResult, int>` and `IMainViewModel` as imports.
+*   **View-ViewModel Wiring**: Upon construction, the controller assigns the `MainViewModel` to the `MainView`'s `DataContext`. This triggers the `UserForm` to set up its data bindings.
+*   **Lifecycle Management**: The controller's `Run()` method starts the WinForms message loop by calling `Application.Run` on the main form, blocking until the application exits.
 
 ```mermaid
 flowchart TD
-    subgraph "WinFormsApp1/Controller"
+    subgraph WinFormsApp1_Controller
         DMC[DefaultModuleController]
     end
-    
-    subgraph "Mvvm Framework"
+
+    subgraph Mvvm
         IMC[IModuleController]
+        IMV[IMainView]
+        IMVM[IMainViewModel]
     end
-    
-    subgraph "External Dependencies"
-        UserForm[UserForm]
-        UserViewModel[UserViewModel]
-        Program[Program.cs]
+
+    subgraph Views_VMs
+        UF[UserForm]
+        UV[UserViewModel]
     end
-    
-    DMC -.->|implements| IMC
-    DMC -->|injects/references| UserForm
-    DMC -->|injects/references| UserViewModel
-    Program -->|calls| DMC
+
+    DMC --implements--> IMC
+    DMC --imports--> IMV
+    DMC --imports--> IMVM
+    IMV --exported by--> UF
+    IMVM --exported by--> UV
+    DMC --sets DataContext--> UF
 ```
 
 ### Rough edges
 
-*   `DefaultModuleController` contains a `Shutdown()` method that is never called by `Program.cs`, making it dead code in this specific host context.
-*   The `Run()` method performs a hard cast of `MainView` to `Form`, which assumes the concrete implementation is always a WinForms `Form` and will throw an exception if the injected view does not inherit from it.
+*   The `Run()` method contains a hard cast of `MainView` to `Form`. This is safe only because `UserForm` is the current sole implementation of `IMainView<DialogResult, int>`; adding a non-Form implementation would cause a runtime exception.
+*   The `Shutdown()` method is defined but never called by `Program.Main`, making the controller-level shutdown path currently dead code in this host.
+*   The view model's `CloseWindow()` and `Shutdown(int)` methods are never invoked by the controller, preventing the view model from signaling a specific exit code back to the host.
 
 ## Contents
 - [DefaultModuleController.cs](WinFormsApp1/Controller/DefaultModuleController.md)

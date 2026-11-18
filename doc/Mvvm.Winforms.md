@@ -1,39 +1,36 @@
 ### Purpose
 
-`Mvvm.Winforms` is a thin WinForms adapter that provides a concrete implementation of the `IMessageService` interface defined in the core `Mvvm` project. It exists to allow framework-agnostic view-models to display standard Windows dialogs (messages, warnings, errors, and yes/no questions) without referencing WinForms types directly. The directory contains only the project file and a single source file, keeping the dependency footprint minimal and focused strictly on UI interaction.
+`Mvvm.Winforms` is a thin adapter layer that provides the WinForms implementation of the `IMessageService` contract. It exists to allow framework-agnostic view models to display modal dialogs without referencing WinForms types directly. The directory contains a single class, `MessageService`, which acts as a bridge between the shared `Mvvm` project and the native `System.Windows.Forms.MessageBox` API.
 
 ### Software Components
 
-The primary component is [MessageService](Mvvm.Winforms/MessageService.md), a class that implements the `IMessageService` contract. It wraps `System.Windows.Forms.MessageBox` calls to expose a unified interface for user notifications. The class is decorated with MEF attributes, making it available for composition into dependent view-models at runtime.
-
-The [Mvvm.Winforms.csproj](Mvvm.Winforms/Mvvm.Winforms.md) file defines the build configuration for this library. It targets `net10.0-windows`, enables the Windows Forms runtime, and establishes a single project reference to the `Mvvm` core project.
+The entire functional surface of this project consists of the `MessageService` class found in [`Mvvm.Winforms/MessageService.cs`](Mvvm.Winforms/MessageService.md). This class implements `IMessageService` and exposes nine methods for displaying information, warnings, errors, and questions. Each method is a thin wrapper that translates interface calls into specific `MessageBox.Show` invocations with appropriate icons and button configurations. The class is marked with `[Export(typeof(IMessageService))]`, registering it for MEF (Managed Extensibility Framework) discovery so that view models can consume it via dependency injection.
 
 ### Relationships
 
-`Mvvm.Winforms` acts as a leaf node in the dependency graph, relying entirely on the `Mvvm` project for its interface definitions and transitive dependencies like `CommunityToolkit.Mvvm`. It does not define any abstractions used by other layers; its sole responsibility is fulfilling the `IMessageService` contract for WinForms hosts.
+This project functions as a satellite to the core `Mvvm` project, which defines the `IMessageService` interface and the `MessageResult` enum. `MessageService` depends on the `Mvvm` project for these contracts and on the Windows Forms library for UI rendering. It is one of three interchangeable platform implementations (alongside Console and WPF versions), with the active instance selected at runtime by MEF composition.
 
-The implementation in [MessageService](Mvvm.Winforms/MessageService.md) relies on a specific numerical alignment between the `MessageResult` enum (from `Mvvm`) and WinForms' `MessageBoxButtons` enum. This allows direct casting of the dialog results without conversion logic. Host applications, such as `WinFormsApp1`, reference this project to inject the WinForms-specific message service into their view-models via MEF.
+View models in other projects, such as `UserManagement/ViewModel/AddUserViewModel.cs`, import `IMessageService` and call methods like `ShowError`. At runtime, the MEF container resolves this import to the `MessageService` instance provided by this project, provided the assembly is loaded. The dependency direction is strictly one-way: `Mvvm.Winforms` depends on `Mvvm`, but `Mvvm` has no knowledge of this project.
 
 ```mermaid
 flowchart TD
-    subgraph Mvvm.Winforms
+    subgraph "Mvvm.Winforms Project"
         MS[MessageService.cs]
-        CSPROJ[Mvvm.Winforms.csproj]
     end
     
-    subgraph Mvvm Core
-        IMES[IMessageService]
-        MRES[MessageResult]
+    subgraph "Mvvm Core Project"
+        IMS[IMessageService.cs]
+        MR[MessageResult.cs]
     end
-
-    CSPROJ -->|Builds| MS
-    MS -->|Implements| IMES
-    MS -->|Uses| MRES
-    CSPROJ -->|References Project| MvvmCore[Mvvm Project]
-    MvvmCore -->|Defines| IMES
-    MvvmCore -->|Defines| MRES
+    
+    subgraph "Windows Forms SDK"
+        MB[MessageBox]
+    end
+    
+    MS -->|implements| IMS
+    MS -->|returns| MR
+    MS -->|delegates to| MB
 ```
 
 ## Contents
 - [MessageService.cs](Mvvm.Winforms/MessageService.md)
-- [Mvvm.Winforms.csproj](Mvvm.Winforms/Mvvm.Winforms.md)

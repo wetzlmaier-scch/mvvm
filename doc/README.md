@@ -1,124 +1,113 @@
-# Demo
+# User Management Application
 
 ## Overview
 
-**Demo** is a .NET solution that demonstrates a layered, MEF (Managed Extensibility Framework)-based MVVM architecture for Windows desktop applications. It solves the problem of building UI-agnostic business logic that can be hosted by multiple front-end technologies (WPF, WinForms, and Console) without code duplication.
+This repository provides a cross-platform .NET application suite for managing user records. It solves the problem of handling user data persistence and validation across different desktop environments by decoupling business logic from presentation frameworks.
 
-The repository is designed for developers looking to understand how to structure enterprise-style C# applications using strict dependency inversion. Its distinctive feature is the use of MEF for plugin-style discovery and composition, allowing the core business logic to remain completely decoupled from specific UI frameworks. The system includes a sample "User Management" feature to demonstrate data persistence, validation, and inter-view communication across these different host environments.
+The solution is designed for developers who need to maintain a single codebase for user management logic while deploying it via WPF, WinForms, or Console hosts. Its distinctive architectural feature is the heavy use of the Managed Extensibility Framework (MEF) for dependency injection and module composition. This allows the core business and view model logic to remain completely agnostic to the specific UI technology, enabling the same services and view models to run in a graphical interface or a headless console environment without code changes.
 
 ## Repository Description
 
-A demonstration of a modular .NET application using MEF, MVVM, and NHibernate, supporting WPF, WinForms, and Console hosts.
+A modular .NET user management application suite demonstrating MEF-based composition and MVVM architecture across WPF, WinForms, and Console hosts.
 
 ## Architecture Overview
 
-The system follows a strict layered architecture where dependency flow is strictly top-down, from UI hosts to business logic and data access. The primary design pattern is **plugin-based composition** via MEF.
+The system is built around a strict layering of abstractions. The `UserManagement` module contains the feature-specific view models and messaging logic. These view models depend on the `BusinessLayer` for service logic and the `Mvvm` core for base classes. The `BusinessLayer` interacts with the `DataAccessLayer` contracts, which are implemented by `DataAccessLayer.Hibernate` to communicate with a SQL Server database via NHibernate.
 
-A request enters through a host application (`WpfApp1`, `WinFormsApp1`, or `ConsoleApp1`). The host bootstraps a `CompositionContainer` using the `CompositionHelper` from the `Common` project. This container scans the output directory for assemblies and discovers classes marked with MEF attributes. The host then resolves an `IModuleController` (specifically `DefaultModuleController`), which orchestrates the lifecycle (`Initialize`, `Run`) of the application modules.
+The primary flow of control begins in the host application (e.g., `WpfApp1`). The host bootstraps a MEF composition container using utilities from the `Common` assembly. This container scans all loaded assemblies to discover exports. It resolves the `IModuleController` exported by the host, which in turn resolves the `IUserViewModel` from the `UserManagement` module. This resolution triggers the composition of the entire object graph: the view model imports `IUserService`, which imports `IRepositoryFactory`, which finally connects to the NHibernate session factory. Data requests flow down through these layers to the database, and results flow back up as Data Transfer Objects (DTOs).
 
-The core feature is the `UserManagement` module, which contains the ViewModels. These ViewModels depend on the `BusinessLayer` for logic and `DataAccessLayer` for data. The `BusinessLayer` contains `UserService`, which handles domain logic and translates `UserDto` objects into persistent entities. Persistence is handled by `DataAccessLayer.Hibernate`, which uses NHibernate to communicate with a SQL Server database.
+A key design decision is the separation of the `DataAccessLayer` (contracts) and `DataAccessLayer.Hibernate` (implementation). This ensures that `BusinessLayer` and `UserManagement` do not reference NHibernate directly. Similarly, the `Mvvm` project defines framework-agnostic interfaces like `IMessageService`, while platform-specific projects (`Mvvm.Wpf`, `Mvvm.Winforms`, `Mvvm.Console`) provide the concrete implementations. This allows the view models to display messages or errors without knowing whether they are running in a WPF window or a console terminal.
 
 ```mermaid
 flowchart TD
-    subgraph "Host Applications"
-        WPF[WpfApp1]
-        WF[WinFormsApp1]
-        CON[ConsoleApp1]
+    subgraph "Presentation & Hosting"
+        WpfApp[WpfApp1]
+        WinFormsApp[WinFormsApp1]
+        ConsoleApp[ConsoleApp1]
+        UserMgmt[UserManagement]
+        MvvmCore[Mvvm]
     end
 
-    subgraph "UI Frameworks & Infrastructure"
-        MVVM_WPF[Mvvm.Wpf]
-        MVVM_WF[Mvvm.Winforms]
-        MVVM_CON[Mvvm.Console]
-        MVVM_CORE[Mvvm]
-        COMMON[Common]
-    end
-
-    subgraph "Feature Module"
-        UM[UserManagement]
-    end
-
-    subgraph "Business Logic"
-        BL[BusinessLayer]
+    subgraph "Application Logic"
+        BizLayer[BusinessLayer]
+        Dto[Dto]
     end
 
     subgraph "Data Access"
-        DAL[DataAccessLayer]
-        DAL_HIB[DataAccessLayer.Hibernate]
-        ENT_HIB[Entity.Hibernate]
-        DTO[Dto]
-        LOG[Logging]
+        DataAccess[DataAccessLayer]
+        HibImpl[DataAccessLayer.Hibernate]
+        EntityHib[Entity.Hibernate]
     end
 
-    DB[(SQL Server)]
+    subgraph "Infrastructure"
+        Common[Common]
+        Logging[Logging]
+        MvvmAdapters[Mvvm.Wpf / Mvvm.Winforms / Mvvm.Console]
+    end
 
-    WPF -->|Inherits/Uses| MVVM_WPF
-    WF -->|Inherits/Uses| MVVM_WF
-    CON -->|Uses| MVVM_CON
+    WpfApp -->|Bootstraps| MvvmCore
+    WinFormsApp -->|Bootstraps| MvvmCore
+    ConsoleApp -->|Bootstraps| MvvmCore
     
-    MVVM_WPF -->|Implements| MVVM_CORE
-    MVVM_WF -->|Implements| MVVM_CORE
-    MVVM_CON -->|Implements| MVVM_CORE
+    UserMgmt -->|Depends on| BizLayer
+    UserMgmt -->|Inherits| MvvmCore
+    UserMgmt -->|Uses| Dto
     
-    WPF & WF & CON -->|Bootstraps| COMMON
-    WPF & WF & CON -->|References| UM
+    BizLayer -->|Implements| DataAccess
+    BizLayer -->|Uses| Logging
+    BizLayer -->|Uses| Dto
     
-    UM -->|Consumes| MVVM_CORE
-    UM -->|Calls| BL
-    UM -->|Uses| DTO
-    UM -->|Uses| LOG
+    HibImpl -->|Implements| DataAccess
+    HibImpl -->|Maps| EntityHib
+    
+    WpfApp -->|Uses| MvvmAdapters
+    WinFormsApp -->|Uses| MvvmAdapters
+    ConsoleApp -->|Uses| MvvmAdapters
+    
+    WpfApp -->|Uses| Common
+    WinFormsApp -->|Uses| Common
+    ConsoleApp -->|Uses| Common
 
-    BL -->|Implements| DAL
-    BL -->|Uses| DTO
-    BL -->|Uses| LOG
-    BL -->|Uses| ENT_HIB
-
-    DAL_HIB -->|Implements| DAL
-    DAL_HIB -->|Maps| ENT_HIB
-    DAL_HIB -->|Writes/Reads| DB
+    BizLayer -->|Queries| SQL[(SQL Server)]
 ```
 
 ## Main Components
 
-*   **UI Hosts (`WpfApp1`, `WinFormsApp1`, `ConsoleApp1`)**: These are thin executable shells. They initialize the MEF container, discover the `DefaultModuleController`, and manage the application lifecycle. They contain no business logic, only bootstrap code and framework-specific adapters (like `MessageService` implementations in `Mvvm.Wpf`, etc.).
-*   **`UserManagement`**: The core feature module implementing the MVVM pattern. It contains `UserViewModel`, `AddUserViewModel`, and `ShowUsersViewModel`. These components use `FluentValidation` for input checks and `WeakReferenceMessenger` to communicate state changes (e.g., user added) without direct coupling.
-*   **`BusinessLayer`**: Contains the domain services, primarily `UserService`. It acts as the bridge between the UI ViewModels and the Data Access Layer. It handles the mapping of `UserDto` to `User` entities and manages NHibernate sessions via a `RepositoryFactory`.
-*   **`DataAccessLayer` & `DataAccessLayer.Hibernate`**: `DataAccessLayer` defines the abstract contracts (`IRepository`, `IUnitOfWork`, `IEntity`), while `DataAccessLayer.Hibernate` provides the concrete NHibernate implementation. This separation ensures the business layer is not coupled to a specific ORM.
-*   **`Mvvm` & `Common`**: `Mvvm` provides the framework-agnostic base classes (`ViewModelBase`, `IView`, `IMessageService`) that all ViewModels inherit from. `Common` provides the `CompositionHelper` which is the engine for MEF assembly scanning and container building, along with shared utilities like `ExtendedGuard` for validation.
-*   **`Dto` & `Entity.Hibernate`**: `Dto` defines the data transfer objects (`UserDto`) and validation rules shared between UI and Business layers. `Entity.Hibernate` defines the NHibernate-mapped `User` entity and its Fluent mappings, determining the database schema.
-*   **`Logging`**: A unified logging facade wrapping Serilog and `Microsoft.Extensions.Logging`. It is injected via MEF into the `BusinessLayer` and `UserManagement` modules to provide consistent diagnostic output.
+*   **UserManagement**: This module contains the feature-specific view models (`UserViewModel`, `AddUserViewModel`, `ShowUsersViewModel`) and the data model. It uses MEF to compose the root view model from its children and uses `WeakReferenceMessenger` to decouple sibling components (e.g., notifying the list view when a user is added). It depends on [BusinessLayer](BusinessLayer.md) for data operations and [Mvvm](Mvvm.md) for base classes.
+*   **BusinessLayer**: The service layer that encapsulates business rules. It contains [UserService](BusinessLayer/UserService.md), which handles user creation and retrieval, and [RepositoryFactory](BusinessLayer/RepositoryFactory.md), which bridges the business layer to the data access layer. It depends on [DataAccessLayer](DataAccessLayer.md) contracts and [Logging](Logging.md) for diagnostics.
+*   **Mvvm**: The framework-agnostic core of the application. It defines the base view model classes (like [ViewModelBase](Mvvm/ViewModelBase.md)) and critical interfaces such as [IModuleController](Mvvm/IModuleController.md) and [IMessageService](Mvvm/IMessageService.md). This project allows the same view models to run in WPF, WinForms, or Console hosts.
+*   **DataAccessLayer**: A contract-only project defining the repository pattern interfaces, such as [IRepository](DataAccessLayer/IRepository.md) and [IRepositoryFactory](DataAccessLayer/IRepositoryFactory.md). It ensures that higher layers do not depend on specific ORM implementations.
+*   **DataAccessLayer.Hibernate**: The NHibernate-specific implementation of the data access contracts. It contains [HibernateRepository](DataAccessLayer.Hibernate/HibernateRepository.md) and [HibernateRepositoryFactory](DataAccessLayer.Hibernate/HibernateRepositoryFactory.md), which manage the session factory and transaction scopes. It depends on [Entity.Hibernate](Entity.Hibernate.md) for mapping definitions.
+*   **Dto**: The data transfer layer. It defines [UserDto](Dto/UserDto.md) and the [IUser](Dto/IUser.md) interface, along with FluentValidation rules. This separates the UI's view of a user from the persistence entity, allowing the two to evolve independently.
+*   **Common**: A shared utility assembly providing cross-cutting concerns. It contains [CompositionHelper](Common/Composition.md) for bootstrapping the MEF container, as well as diagnostic and imaging utilities. All host applications depend on this project to initialize their dependency injection containers.
 
 ## Features
 
-*   **Multi-Platform Hosting**: The same business logic and ViewModels run on WPF, WinForms, and Console hosts via MEF.
-*   **MEF-Based Plugin Architecture**: Modules are discovered and composed at runtime, allowing for modular extension.
-*   **Framework-Agnostic MVVM**: Core ViewModels are decoupled from UI specifics, using interfaces for view interaction and messaging.
-*   **Fluent Validation**: Input validation is handled via `FluentValidation` in the `Dto` layer, surfacing errors to the UI via `INotifyDataErrorInfo`.
-*   **NHibernate Persistence**: Database operations are abstracted behind repositories, using NHibernate for SQL Server interaction with schema auto-updating.
-*   **Unified Logging**: Centralized Serilog-backed logging service injected via MEF across layers.
+*   **Cross-Platform MVVM**: A single set of view models that function in WPF, WinForms, and Console applications.
+*   **MEF-Based Composition**: Uses the Managed Extensibility Framework to wire up services, view models, and module controllers at runtime.
+*   **Decoupled Data Access**: Implements the Repository pattern with NHibernate, isolating business logic from database specifics.
+*   **Cross-Component Messaging**: Uses `WeakReferenceMessenger` to allow sibling view models to communicate without direct references.
+*   **Platform-Specific Messaging**: Provides consistent user feedback (alerts, errors) via `IMessageService`, with different implementations for console, WPF, and WinForms.
 
 ## Technology Stack
 
-*   **Language**: C# (targeting .NET 10)
-*   **UI Frameworks**: WPF, Windows Forms, Console
-*   **Architecture Pattern**: MVVM, Layered Architecture
-*   **Dependency Injection/Composition**: MEF (Managed Extensibility Framework)
-*   **ORM**: NHibernate (with Fluent NHibernate)
-*   **Validation**: FluentValidation
-*   **Logging**: Serilog, Microsoft.Extensions.Logging
+*   **Language**: C# (.NET 10)
+*   **UI Frameworks**: WPF, Windows Forms
+*   **Dependency Injection**: MEF (Managed Extensibility Framework)
+*   **ORM**: NHibernate
 *   **Database**: SQL Server
+*   **Validation**: FluentValidation
+*   **Logging**: Serilog
 *   **Testing**: MSTest, Moq
-*   **Community Toolkit**: `CommunityToolkit.Mvvm` (for `ObservableObject`)
 
 ## Use Cases
 
-*   **Learning MEF Composition**: Developers looking to understand how to use `System.ComponentModel.Composition` for plugin-based application design in .NET.
-*   **Multi-UI Development**: Teams needing to share business logic and ViewModels across different Windows UI technologies (e.g., migrating from WinForms to WPF) without rewriting the core logic.
-*   **NHibernate Repository Pattern**: Implementers wanting to see a concrete example of abstracting ORM concerns behind interfaces (`IRepository`, `IUnitOfWork`) in a C# application.
-*   **MVVM with Validation**: Developers seeking a reference implementation of MVVM that integrates `FluentValidation` and handles data errors in ViewModels.
+*   Developing a Windows desktop application that needs to display and manage a list of users with form validation.
+*   Creating a headless service or script that needs to interact with the same user data and business rules as the desktop apps.
+*   Refactoring a monolithic desktop app to decouple business logic from the UI framework for better testability.
+*   Implementing a plugin architecture where new features are added as modules discovered by MEF at runtime.
 
 ## Contents
-- [Demo.slnx](Demo.md)
 - [BusinessLayer/](BusinessLayer.md)
 - [Common/](Common.md)
 - [ConsoleApp1/](ConsoleApp1.md)

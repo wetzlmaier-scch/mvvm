@@ -2,26 +2,25 @@
 
 ### Purpose
 
-`DataAccessLayer.Hibernate/IHibernateRepository.cs` defines `IHibernateRepository<TKey>`, the NHibernate-specific contract that extends the data layer's generic `IRepository<TKey>` (`DataAccessLayer/IRepository.cs`) with two Hibernate concerns: an explicit `Save<TEntity>` method and a `UnitOfWork` property that exposes the unit of work backed by the same session.
+This file defines `IHibernateRepository<TKey>`, the NHibernate-specific repository contract. It exists because the data layer's generic `IRepository<TKey>` is read-only, while business code also needs to persist entities through NHibernate and to control the surrounding transaction. This interface adds exactly that write path and transaction seam to the query contract.
 
 ### Role in the Codebase
 
-The generic `IRepository<TKey>` in the `DataAccessLayer` namespace defines only query operations (`GetQueryable`, `Single`, `Find`, `GetAll`, and so on). Callers who want to persist through NHibernate need an interface that also declares saving and transaction access; that is this interface. It is implemented by `HibernateRepository<TKey>` in the same directory (`DataAccessLayer.Hibernate/HibernateRepository.cs`), and produced by factories implementing `IHibernateRepositoryFactory<TKey>` (`DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs`). Domain/application code can depend on `IHibernateRepository<TKey>` rather than the concrete class, or on plain `IRepository<TKey>` when it only needs reads.
+It is one of the three interfaces in the `DataAccessLayer.Hibernate` module (`IHibernateRepository`, `IHibernateRepositoryFactory`, `IHibernateUnitOfWork`) that let consumers depend on an NHibernate-backed data layer without referencing NHibernate types. It sits at the boundary of the read/write split: `IRepository<TKey>` (`DataAccessLayer/IRepository.cs`) covers reading; this interface covers saving and lifecycle. If it were removed, the only implementor, `HibernateRepository<TKey>` (`DataAccessLayer.Hibernate/HibernateRepository.cs`), and the factory contract `IHibernateRepositoryFactory<TKey>` would have nothing to produce or implement, and the business layer's `IRepositoryFactory` (`BusinessLayer/IRepositoryFactory.cs`) chain would collapse.
 
 ### Relationships
 
-- Inherits `IRepository<TKey>` from `DataAccessLayer/IRepository.cs` — all read/query members come from that interface and are not restated here.
-- Inherits `IDisposable` from `System`.
-- `IEntity<TKey>` (referenced in the `Save` constraint) is defined in `DataAccessLayer/IEntity.cs` as a marker requiring a `TKey Id` property; abstract base class `Entity<TKey>` in `DataAccessLayer/Entity.cs` implements it.
-- `IHibernateUnitOfWork` is defined in `DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs` and implemented by `HibernateUnitOfWork` in the same directory.
+- **Extends `IRepository<in TKey>`** (`DataAccessLayer/IRepository.cs`): inherited here are all the read operations — `GetQueryable`, `Single`, `SingleOrDefault`, `Find`, `FindOne`, `GetAll` — all generic over entities implementing `IEntity<TKey>`. This interface adds two things on top of those.
+- **Extends `IDisposable`** (BCL): repositories hold an NHibernate session, so consumers must dispose them. Notably `IRepository<TKey>` is not disposable, so disposal is only possible when holding this contract.
+- **Returns `IHibernateUnitOfWork`** (`DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs`): the transaction unit exposed through the `UnitOfWork` property, which itself extends `IUnitOfWork` (`DataAccessLayer/IUnitOfWork.cs`) and adds `BeginTransaction(IsolationLevel)`.
+- **Implemented by** `HibernateRepository<TKey>` (`DataAccessLayer.Hibernate/HibernateRepository.cs`), which the interface never names; consumers go through the abstraction.
+- **Typical callers:** code resolving repositories through the factory chain — `IRepositoryFactory` in `BusinessLayer/IRepositoryFactory.cs` derives from `IHibernateRepositoryFactory<int>`, whose `Create()` returns an `IHibernateRepository<int>`.
 
 ### Behavior & Details
 
-- `TKey` is constrained to `struct` and marked `in` (contravariant), so a repository typed on a derived key can be used where a base-key repository is expected.
-- `Save<TEntity>(TEntity entity)` is the only persistence operation declared. In the sole implementation, `HibernateRepository.Save`, it calls `IStatelessSession.InsertAsync(entity)`. Because the session is a *stateless* NHibernate session, `Save` is an immediate insert — there is no identity map or dirty checking. If an entity already exists in the database, a second `Save` will produce a duplicate-key error; this interface has no `Update` or `Delete` members at all.
-- `UnitOfWork { get; }` exposes the `IHibernateUnitOfWork` bound to the repository's session. The implementation lazily creates a `HibernateUnitOfWork(_session)` on first access, so the caller controls transaction scope (`BeginTransaction`, `CommitTransaction`, `RollBackTransaction`) around any work performed through that repository. `Save` executes within the active transaction on that session.
-- `Dispose` (inherited from `IDisposable`) disposes the associated unit of work, and by extension any uncommitted transaction on it.
+The interface declares one method and one property:
 
-### Rough edges
+- **`Task Save<TEntity>(TEntity entity) where TEntity : class, IEntity<TKey>`** — the only write operation in the contract, and it is strictly an *insert*: the sole implementation calls `_session.InsertAsync(entity)` on the stateless session, so an existing row is not updated by this method. It returns a `Task`, so callers must await or observe it; the interface itself does not define any commit — a save is only durable when the associated unit of work commits (see the next point), since the stateless session does not auto-flush.
+- **`IHibernateUnitOfWork UnitOfWork { get; }`** — exposes the transaction scope for the repository. The implementation creates the unit of work lazily on first access and reuses the same instance on subsequent reads; it shares the repository's stateless session, and disposing the repository disposes the unit of work with it. Callers who need a transaction get one from here rather than constructing one themselves.
 
-The `UnitOfWork` property on the *interface* is a lazy, mutable cache in the implementation: once a unit of work is created for a repository, the repository effectively has a committed scope of work for its lifetime, which can surprise callers who obtain several repositories from the factory expecting independent transactions.
+`TKey` is constrained to `struct` and declared `in` (contravariant), matching `IRepository<TKey>`; in practice the codebase uses `int` keys.

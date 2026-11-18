@@ -1,56 +1,69 @@
 ### Purpose
 
-The `BusinessLayer` project contains the application's domain logic, specifically handling user management and database session management. It sits between the UI (view models) and the data access layer, ensuring that higher-level components do not need to know about NHibernate or specific database implementations. The files belong together because they form a closed MEF (Managed Extensibility Framework) composition unit: they define the interfaces for services and repositories, provide concrete implementations wired via attributes, and handle errors specific to this layer.
+The `BusinessLayer` package acts as the application’s service layer, isolating business rules from data access and UI concerns. It contains the concrete implementations for user management services, the specific configuration required to connect to the database via NHibernate, and the error handling contract for business failures. These components reside together because they share a common composition root via MEF (Managed Extensibility Framework) and form a self-contained logical unit that transforms DTOs into domain entities and vice versa.
 
 ### Software Components
 
-The logic is split into two main responsibilities: service execution and persistence setup.
+The package is structured around a few key responsibilities:
 
-*   **User Service:** The [UserService](BusinessLayer/UserService.md) is the primary business logic component. It implements [IUserService](BusinessLayer/IUserService.md) to handle user queries and creation. It uses [IRepositoryFactory](BusinessLayer/IRepositoryFactory.md) to access data and wraps failures in a [BusinessLayerException](BusinessLayer/BusinessLayerException.md).
-*   **Repository Infrastructure:** The [RepositoryFactory](BusinessLayer/RepositoryFactory.md) manages the NHibernate session factory. It acts as a thin wrapper around the generic Hibernate factory, fixing the key type to `int`. It relies on [ModelContext](BusinessLayer/ModelContext.md) to retrieve the connection string and mapping assemblies from configuration.
-*   **Contracts and Context:** [IRepositoryFactory](BusinessLayer/IRepositoryFactory.md) and [ModelContext](BusinessLayer/ModelContext.md) define the abstract boundaries. [ModelContext](BusinessLayer/ModelContext.md) is a simple MEF export that reads configuration values and passes them to the repository factory.
+**Service Implementation**
+`UserService` (`BusinessLayer/UserService.cs`) is the primary business logic component. It implements [IUserService](BusinessLayer/IUserService.md), handling operations like `GetActiveUsers` and `AddUser`. It depends on the repository factory to persist data and uses [BusinessLayerException](BusinessLayer/BusinessLayerException.md) to standardize error reporting to the UI layer.
+
+**Data Access Wiring**
+`RepositoryFactory` (`BusinessLayer/RepositoryFactory.cs`) bridges the business layer to the data access layer. It is a thin MEF-exported class that extends a generic NHibernate factory, closing it to `int` keys. It relies on `ModelContext` to provide connection details and mapping assembly names. The contract for this factory is defined in [IRepositoryFactory](BusinessLayer/IRepositoryFactory.md).
+
+**Configuration Context**
+`ModelContext` (`BusinessLayer/ModelContext.cs`) provides the concrete `IModelContext` required by the repository factory. It reads the connection string from application settings and hardcodes the assembly name containing entity mappings. This class essentially configures the NHibernate session factory for this specific application.
+
+**Contracts & Exceptions**
+`IUserService` (`BusinessLayer/IUserService.cs`) defines the service interface exposed to view models and tests. [BusinessLayerException](BusinessLayer/BusinessLayerException.md) serves as the specific exception type for business rule violations or service failures, allowing callers to distinguish business errors from framework errors.
 
 ### Relationships
 
-The components are wired together using MEF attributes rather than manual dependency injection. [RepositoryFactory](BusinessLayer/RepositoryFactory.md) imports [ModelContext](BusinessLayer/ModelContext.md) during construction to get its configuration. [UserService](BusinessLayer/UserService.md) imports [IRepositoryFactory](BusinessLayer/IRepositoryFactory.md) to open a new repository instance for each operation. When [UserService](BusinessLayer/UserService.md) encounters an error, it throws [BusinessLayerException](BusinessLayer/BusinessLayerException.md), which the UI layer can catch specifically to handle business logic failures.
+The components within `BusinessLayer` are wired together via MEF composition. `ModelContext` exports an `IModelContext`, which is imported by `RepositoryFactory`. `RepositoryFactory` then exports `IRepositoryFactory`, which is imported by `UserService`. Finally, `UserService` exports `IUserService`, which is consumed by the UI layer (`UserManagement` view models) and the test project.
+
+`UserService` depends on `IRepositoryFactory` for data access and `ILoggingService` for logging. While `IRepositoryFactory` is injected via the constructor, `ILoggingService` is a property on the `IUserService` interface that is expected to be populated by the composition container. This property-based injection is a point of fragility, as the code does not guarantee initialization before use.
+
+The data flow starts when a view model calls `IUserService`. `UserService` then uses the repository factory to create a transient repository, executes the database operation, and returns a `UserDto`. If an error occurs during persistence, it is wrapped in `BusinessLayerException` and propagated back to the caller.
 
 ```mermaid
 flowchart TD
     subgraph "BusinessLayer"
-        US[UserService]
-        RF[RepositoryFactory]
-        MC[ModelContext]
-        IUF[IUserService]
-        IRF[IRepositoryFactory]
-        BLEx[BusinessLayerException]
+        MS[ModelContext.cs]
+        RF[RepositoryFactory.cs]
+        US[UserService.cs]
+        BLE[BusinessLayerException.cs]
+    end
+
+    subgraph "Interfaces (BusinessLayer)"
+        IUS[IUserService.cs]
+        IRF[IRepositoryFactory.cs]
     end
 
     subgraph "External Dependencies"
-        DA[DataAccessLayer.Hibernate]
-        ENT[Entity.Hibernate]
-        DTO[Dto]
+        DATA[DataAccessLayer.Hibernate]
+        LOG[Logging/ILoggingService]
+        UI[UserManagement ViewModels]
     end
 
-    US -- "implements" --> IUF
-    US -- "depends on" --> IRF
-    US -- "throws" --> BLEx
-    
-    RF -- "implements" --> IRF
-    RF -- "inherits from" --> DA
-    RF -- "imports" --> MC
-    
-    MC -- "inherits from" --> DA
-    
-    US -- "maps to" --> DTO
-    US -- "uses entities from" --> ENT
+    MS -->|Provides IModelContext to| RF
+    RF -->|Implements| IRF
+    US -->|Implements| IUS
+    US -->|Imports| IRF
+    US -->|Uses| BLE
+    US -->|Uses| LOG
+    UI -->|Imports| IUS
+    RF -->|Extends| DATA
 ```
 
 ### Rough edges
 
-The `LoggingService` property in [UserService](BusinessLayer/UserService.md) is not injected via MEF (missing `[Import]`), so it defaults to null and will cause a `NullReferenceException` if an error occurs before the host explicitly sets it. Additionally, the `GetActiveUsers` method in [UserService](BusinessLayer/UserService.md) does not actually filter for active users, returning all users despite its name.
+*   `ModelContext` uses a C# 12 primary constructor syntax that appears syntactically invalid or unusual for its base class inheritance, raising concerns about whether it compiles as written.
+*   `UserService.AddUser` validates input using `Guard`, which throws `ArgumentException`, but the method's intent (and catch block) is to only throw `BusinessLayerException`. This means validation errors bypass the intended error handling contract.
+*   `GetActiveUsers` in `UserService` does not filter by `IsActive` despite the method name, returning all users instead.
+*   The `LoggingService` property on `IUserService` is initialized to `null!` in `UserService` and relies on MEF property injection to be set before use. If injection fails or is delayed, an `AddUser` error will cause a `NullReferenceException` instead of a handled business error.
 
 ## Contents
-- [BusinessLayer.csproj](BusinessLayer/BusinessLayer.md)
 - [BusinessLayerException.cs](BusinessLayer/BusinessLayerException.md)
 - [IRepositoryFactory.cs](BusinessLayer/IRepositoryFactory.md)
 - [IUserService.cs](BusinessLayer/IUserService.md)

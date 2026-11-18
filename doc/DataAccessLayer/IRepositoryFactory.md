@@ -1,38 +1,35 @@
 # `DataAccessLayer/IRepositoryFactory.cs`
 
-## Purpose
+### Purpose
 
-This interface defines the contract for a component that produces repository instances and can tear them down. It exists so that consumers of the data access layer can obtain repositories through a factory abstraction instead of instantiating them directly, which decouples business-layer code from the mechanics of opening sessions.
+This file defines `IRepositoryFactory<TRepository, TKey>`, the engine-agnostic contract for creating and dropping repository instances in the data access layer. It exists so that consumers (the business layer) can depend on "give me a repository" without knowing how sessions are opened — that detail belongs to a concrete persistence implementation, currently NHibernate.
 
-## Role in the Codebase
+### Role in the Codebase
 
-The interface is the top of a small inheritance chain in the `DataAccessLayer` project:
+The `DataAccessLayer` project is a small contracts-only project: it holds the persistence abstractions (`IRepository<TKey>`, `IUnitOfWork`, `IEntity<TKey>`) with no implementation. This interface is one of its core contracts — the factory side of the repository abstraction — and sits at the top of a three-level inheritance chain:
 
-1. `IRepositoryFactory<TRepository, TKey>` (this file) — generic contract.
-2. `IHibernateRepositoryFactory<TKey>` in `DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs` — binds `TRepository` to `IHibernateRepository<TKey>`, so callers only write `IHibernateRepositoryFactory<TKey>`.
-3. `IRepositoryFactory` in `BusinessLayer/IRepositoryFactory.cs` — closes `TKey` to `int`, the application's actual key type.
+1. `IRepositoryFactory<TRepository, TKey>` (this file) — the generic, engine-agnostic contract.
+2. `IHibernateRepositoryFactory<TKey>` in `DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs` — closes `TRepository` to `IHibernateRepository<TKey>`.
+3. `IRepositoryFactory` in `BusinessLayer/IRepositoryFactory.cs` — closes `TKey` to `int`, the form business services actually consume.
 
-The concrete implementation is `HibernateRepositoryFactory<TKey>` in `DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`; the composed instance is `RepositoryFactory` in `BusinessLayer/RepositoryFactory.cs`.
+Removing this interface would break both the Hibernate factory chain and the business-layer `IRepositoryFactory`, since they all ultimately derive from it.
 
-If this file were removed, both `IHibernateRepositoryFactory` and the generic binding it depends on would break, and the business layer's factory interface chain would have nothing to inherit from.
+### Relationships
 
-## Relationships
+- **Depends on** `IRepository<TKey>` (`DataAccessLayer/IRepository.cs`, same project): the `TRepository` parameter is constrained to `IRepository<TKey>`, so anything a factory can create must expose the query contract (`GetQueryable`, `Single`, `Find`, etc.). `TKey` is additionally constrained to `struct`.
+- **Implemented by** `HibernateRepositoryFactory<TKey>` (`DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`), which satisfies the base `Create()` via an explicit interface implementation delegating to its public `Create()` method, and provides a `Drop()` implementation.
+- **Consumed indirectly by** business-layer services. For example, `UserService` (`BusinessLayer/UserService.cs`) receives the non-generic `BusinessLayer.IRepositoryFactory` in its MEF `[ImportingConstructor]` and calls `Create()` per operation to open repositories for its queries.
 
-- **Extends nothing**; its constraint references `IRepository<TKey>` from `DataAccessLayer/IRepository.cs`, the generic query API (`GetQueryable`, `Single`, `Find`, `GetAll`, etc.) that created repositories implement.
-- **Implemented (indirectly) by** `HibernateRepositoryFactory<TKey>` in `DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`, which provides the `Create()` and `Drop()` implementations. Note that it implements `Create()` through an explicit interface-implementation cast (the line reading `IRepositoryFactory<IHibernateRepository<TKey>, TKey>.Create()`), so this interface's members are what that file is answering to.
-- **Consumers:** Business-layer services take the business-layer `IRepositoryFactory` (e.g., `UserService` in `BusinessLayer/UserService.cs` receives it via its constructor) and call `Create()` to get a repository.
+### Behavior & Details
 
-## Behavior & Details
+The interface has exactly two members:
 
-- **`Create()`** — returns a new `TRepository`. The concrete implementation opens a stateless NHibernate session per call, so each returned repository is independent and should be disposed by the caller.
-- **`Drop()`** — intended to release anything the factory holds. In the only concrete implementation, `HibernateRepositoryFactory.Drop()`, this is currently `throw new NotImplementedException()`; no call site invokes it, so it is effectively a placeholder for future teardown.
+- `TRepository Create()` — produce a repository instance. Because `TRepository` is declared as an `out` variance position, the interface only ever hands repositories *out*; consumers can never pass one back in. The concrete Hibernate implementation opens a new NHibernate stateless session per call, so each `Create()` yields an independent repository and callers are responsible for disposing it.
+- `void Drop()` — intended to tear down / release factory-level resources (the session factory in the Hibernate implementation). In practice, `HibernateRepositoryFactory<TKey>.Drop()` throws `NotImplementedException`, so this member currently has no working implementation and should not be relied on for shutdown logic.
 
-Two caveats worth knowing before relying on this contract:
+A consumer typically uses it like this: call `Create()`, use the returned repository inside a `using` block, and let disposal of the repository (not the factory) clean up the session.
 
-- **The `out` variance on `TRepository` is not actually honored.** `TRepository` is an output position (only a return type), so `out` looks right, but the constraint `where TRepository : IRepository<TKey>` puts it in an *in* position — generic variance in C# requires that no constraint on a covariant parameter reference the parameter, so this combination is not valid C# (the compiler rejects `where T : SomeInterface<out U>` for a covariant `U`). The code as written therefore signals that the variance attribute was likely added by mistake; it has no effect beyond the compiler error it implies.
-- **`Drop()` is aspirational.** Since no implementation can actually honor it yet, do not design shutdown paths around calling `Drop()`.
+### Rough edges
 
-## Rough edges
-
-- The `out` variance modifier on `TRepository` conflicts with the `IRepository<TKey>` constraint and is not valid C# as written.
-- `Drop()` has no working implementation anywhere (`NotImplementedException`), making half of the contract unusable.
+- `Drop()` is declared in the contract but the only implementation (`HibernateRepositoryFactory<TKey>.Drop()`) throws `NotImplementedException`, so the contract cannot actually be honored — code that calls `Drop()` expecting a graceful shutdown will crash.
+- The factory is designed for a single instantiation: `HibernateRepositoryFactory<TKey>` sets a `static IsInitialized` flag and throws `InvalidOperationException` if a second instance is ever constructed, which is an implementation constraint the interface contract itself does not express.

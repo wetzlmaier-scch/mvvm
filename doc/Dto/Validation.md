@@ -1,41 +1,38 @@
 ### Purpose
 
-The `Dto/Validation` directory contains shared validation logic for Data Transfer Objects (DTOs). Its single responsibility is to provide reusable rule sets that UI ViewModels use to validate user input against business rules, rather than each ViewModel hand-rolling its own checks. The contents are grouped here because they rely on the type definitions in `Dto/` and serve the validation needs of the `Mvvm/` layer.
+The `Dto/Validation` directory contains the application’s business logic for data validation, specifically using the FluentValidation library. Its sole responsibility is to enforce consistency rules on user data before it is processed further. It houses `UserValidator.cs`, which defines the constraints for the `IUser` contract, allowing the presentation layer to validate input automatically without duplicating manual checks.
 
 ### Software Components
 
-This directory consists of a single validation component:
+This directory contains a single component: the [UserValidator](Dto/Validation/UserValidator.md) class located in `UserValidator.cs`.
 
-*   **`UserValidator.cs`**: Contains the `UserValidator` class. This is a FluentValidation validator for the `IUser` interface. It enforces the specific business rule that both `FirstName` and `LastName` must be non-empty. It acts as a leaf component with no state or side effects, designed to be injected into ViewModels.
+[UserValidator](Dto/Validation/UserValidator.md) extends the external `AbstractValidator<T>` base class from FluentValidation. It encapsulates the specific rules that `FirstName` and `LastName` must be non-empty. By centralizing these rules here, the class ensures that any view model handling user data, such as `AddUserViewModel`, inherits this validation logic through the `ValidatableViewModelBase<T>` plumbing.
 
 ### Relationships
 
-`UserValidator` sits at the boundary between the data model and the presentation logic. It extends `AbstractValidator<T>` from the external FluentValidation library, which provides the mechanism for rule execution.
+The directory acts as the validation boundary between the data model and the UI. `UserValidator.cs` defines the rules, while the `Mvvm` project’s `ValidatableViewModelBase` consumes them to trigger validation and surface error messages in the interface.
 
-The dependency flows from the UI layer to this directory. Specifically, `AddUserViewModel` (located in `UserManagement/ViewModel/`) constructs a new instance of [UserValidator](Dto/Validation/UserValidator.md) and passes it to its base class, `ValidatableViewModelBase<T>`. The base class then uses the `IValidator<T>` interface to run validation against the ViewModel's observable properties. Although `UserValidator` is written to validate `IUser`, in practice it validates the ViewModel itself because the ViewModel implements `IUser`. This allows the same validation rules to apply to both the transient UI state and the persisted data structure.
+`UserValidator.cs` depends on `IUser` (defined in `Dto/IUser.cs`) to target the properties it validates. It does not depend on the UI layer, but the UI layer depends on it: `AddUserViewModel` passes an instance of [UserValidator](Dto/Validation/UserValidator.md) to its base class, which then runs the validation checks. This dependency flows strictly from the presentation layer down to this directory; changing rules here impacts the UI, but changes in the UI do not affect the validator.
 
 ```mermaid
 flowchart TD
-    subgraph "Dto/Validation"
-        UV[UserValidator]
+    subgraph "Dto Project"
+        IUser["IUser.cs"]
+        UV["UserValidator.cs"]
     end
     
-    subgraph "External"
-        FL[FluentValidation<br/>AbstractValidator]
+    subgraph "Mvvm Project"
+        VB["ValidatableViewModelBase.cs"]
     end
     
-    subgraph "UserManagement/ViewModel"
-        AVVM[AddUserViewModel]
-    end
-    
-    subgraph "Mvvm"
-        VB[ValidatableViewModelBase]
+    subgraph "UserManagement Project"
+        AUV["AddUserViewModel.cs"]
     end
 
-    UV -->|inherits| FL
-    AVVM -->|constructs| UV
-    AVVM -->|passes to| VB
-    VB -->|uses for validation| UV
+    AUV -->|instantiates and passes to| VB
+    AUV -->|depends on| UV
+    VB -->|executes validation| UV
+    UV -->|validates properties of| IUser
 ```
 
 ## Contents

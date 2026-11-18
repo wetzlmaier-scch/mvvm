@@ -1,26 +1,31 @@
-# Mvvm.Console/MessageService.cs
+# `Mvvm.Console/MessageService.cs`
+
+This file defines `MessageService`, the console-host implementation of the `IMessageService` interface (declared in `Mvvm/IMessageService.cs`). It exists so that ViewModels in the framework-agnostic `Mvvm` project can display messages, warnings, and errors in a console application without referencing any WPF or WinForms types.
 
 ### Purpose
-This file defines `MessageService`, the console-host implementation of `IMessageService` (defined in `Mvvm/IMessageService.cs`). It exists so that ViewModels in the library can display messages and warnings, and ask the user yes/no/ok-cancel questions, without knowing which UI technology is hosting the application. In a console app, the "display" part is coloured `Console.WriteLine` output; the question part is not implemented in a console host.
+The `Mvvm` project defines a messaging contract that its ViewModels use to surface information to the user. Each host UI technology provides its own implementation of that contract: `Mvvm.Wpf` and `Mvvm.Winforms` use native message boxes, and this class covers the console scenario, where the only available output is colored text on the terminal.
 
 ### Role in the Codebase
-It is one of three sibling implementations of the same contract: `Mvvm.Console/MessageService.cs` (this file), `Mvvm.Wpf/MessageService.cs`, and `Mvvm.Winforms/MessageService.cs`. The `Mvvm` project defines only the interface, enum, and base ViewModel; each host-specific project contributes its own `MessageService`. The `Mvvm.Console` project contains nothing else but this service and its `.csproj`, so its entire reason to exist is to provide this export. If it were removed, any console application composing `IMessageService` from this assembly would fail to resolve the dependency (or would have to bring in the WPF/WinForms implementation instead).
+This is the single source file of the `Mvvm.Console` class library. It is decorated with `[Export(typeof(IMessageService))]`, so MEF discovers it at composition time and supplies it to any component that imports `IMessageService`. `Mvvm.Console.csproj` references only the `Mvvm` project (for the interface and `MessageResult`) and the `System.ComponentModel.Composition` package, keeping the console adapter free of any UI-framework dependency.
+
+A caller in this context is a ViewModel injected with the interface — for example `UserManagement/ViewModel/AddUserViewModel.cs` has an `IMessageService MessageService` property — or a unit test that instead mocks `IMessageService` directly (`TestProject1/UserViewModelTest.cs`).
 
 ### Relationships
-- **`IMessageService`** (`Mvvm/IMessageService.cs`): the interface implemented here. All nine members, including the three question methods, are required by it.
-- **`MessageResult`** (`Mvvm/MessageResult.cs`): the enum returned by the question methods.
-- **MEF**: the `[Export(typeof(IMessageService))]` attribute (from `System.ComponentModel.Composition`) makes this class discoverable for dependency injection. Callers depend on the interface, not this class. For example, `UserManagement/ViewModel/AddUserViewModel.cs` declares `IMessageService MessageService` as a settable property and calls `MessageService.ShowError("User data is invalid!")`. Which concrete `MessageService` is supplied depends on which `Mvvm.*` assembly the host application composes.
-- **Tests**: `TestProject1/UserViewModelTest.cs` does not use this class; it mocks `IMessageService` directly.
+- **`IMessageService`** (`Mvvm/IMessageService.cs`): the contract implemented here. All nine members are required by it; none are added.
+- **`MessageResult`** (`Mvvm/MessageResult.cs`): the enum returned by the three question methods.
+- **MEF**: `[Export(typeof(IMessageService))]` (from `System.ComponentModel.Composition`) makes this class discoverable for dependency injection. Callers depend on the interface, not this class.
 
 ### Behavior & Details
-All output is formatted as `{caption} | {message}`.
+The six display methods all follow the same shape: set `System.Console.ForegroundColor`, then write a line of the form `{caption} | {message}`.
 
-- `ShowMessage` prints to standard output in white; the single-argument overload delegates with the caption `"Message"`.
-- `ShowWarning` prints to standard output in yellow; the single-argument overload uses the caption `"Warning"`.
-- `ShowError` prints to standard **error** (`Console.Error`) in red — the only method that does this — with the caption `"Error"`.
-- Each two-argument method sets `Console.ForegroundColor` and never restores the previous colour, so the console stays coloured as the last method that ran.
-- `ShowYesNoCancelQuestion`, `ShowYesNoQuestion`, and `ShowOkCancelQuestion` each throw `NotImplementedException`. They exist only to satisfy the interface.
+- `ShowMessage` writes in white to standard output; the single-argument overload delegates with the default caption `"Message"`.
+- `ShowWarning` writes in yellow to standard output; the single-argument overload defaults the caption to `"Warning"`.
+- `ShowError` writes in red, but to `Console.Error` rather than `Console.Out`; the single-argument overload defaults the caption to `"Error"`.
+
+There is no state: each method sets the foreground color, writes one line, and leaves the color as set. Nothing here restores the previous console color, so subsequent unrelated console output inherits the color used by the last message.
+
+The three question methods — `ShowYesNoCancelQuestion`, `ShowYesNoQuestion`, `ShowOkCancelQuestion` — exist only to satisfy the interface and each body is a single `throw new NotImplementedException()`. A console host cannot present a modal button dialog, so calling any of them from a console-hosted ViewModel crashes the application. The other two implementations (`Mvvm.Wpf`, `Mvvm.Winforms`) return a real `MessageResult` from a native dialog; this one cannot.
 
 ### Rough edges
-- The question methods are unimplementable in a plain console host (no modal dialog), so they throw; any ViewModel calling a question method in a console app crashes at runtime rather than degrading gracefully.
-- `ShowMessage` and `ShowWarning` permanently change the console foreground colour as a side effect of writing one line.
+- The question methods throw at runtime instead of degrading to a text prompt, so any ViewModel path that reaches a question is untestable in the console host.
+- `Console.ForegroundColor` is a process-wide setting that is never restored after a message, which can leak into any other console output in the host application.

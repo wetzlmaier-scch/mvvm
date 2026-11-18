@@ -1,55 +1,35 @@
 ### Purpose
 
-The `Dto` package defines the shared data contracts and validation rules for user information across the application. It acts as the neutral middle ground between the UI and business layers, ensuring that the presentation and service tiers exchange user data without depending directly on the persistence layer's entities. The contents are grouped together because the data types (like `UserDto`) and their validation logic (`Validation/`) are tightly coupled and consumed jointly by the higher-level features.
+The `Dto` directory is a C# project that serves as the neutral data layer for the application. It defines the shared contracts and validation rules for user data, allowing the UI and business logic layers to communicate without depending on each other or the persistence entities. Its contents belong together because they form a single, self-contained module for defining "what a user looks like" to the rest of the system, stripped of any infrastructure concerns.
 
 ### Software Components
 
-This package consists of two main components:
+The directory contains two primary code components that work in tandem:
 
-*   **Data Models**: Found in the root of the directory, this includes [UserDto](Dto/UserDto.md), a plain data object that carries user details like `FirstName`, `LastName`, and `Id`. It is backed by the [IUser](Dto/IUser.md) interface, which defines the minimal contract for user names. This interface allows the UI layer to bind to user data before an identity (`Id`) exists, while `UserDto` is the concrete object passed to the business layer.
-*   **Validation Rules**: Located in the [Validation](Dto/Validation.md) subdirectory, this component contains `UserValidator`, a FluentValidation rule set. It ensures that `FirstName` and `LastName` are non-empty. This validator is designed to be injected into ViewModels, allowing the UI to enforce business rules on input before the data is ever sent to the service layer.
+*   **`UserDto`**: Defined in `UserDto.cs`, this is the concrete data transfer object. It implements the `IUser` interface but adds an `Id` property to carry the persistence identifier across the service boundary. It contains no logic, only auto-properties, and acts as the payload for `IUserService` methods.
+*   **`IUser`**: Defined in `IUser.cs`, this interface represents the minimal "user shape" consisting only of `FirstName` and `LastName`. It is the contract used by the validation layer and the view models in the UI. By omitting `Id`, it forces the UI to work with a simplified view of the user that does not require knowledge of the database identity.
 
-The package is built as a class library via [Dto.csproj](Dto/Dto.md), which targets .NET 10 and references the `FluentValidation` library. It has no project references of its own, making it a foundational dependency at the bottom of the solution's graph.
+These components are supported by the `Validation/` subdirectory, which houses the `UserValidator` class. This class applies FluentValidation rules to the `IUser` contract, ensuring that names are not empty before the data is processed further in the UI layer.
 
 ### Relationships
 
-The `Dto` package is referenced only by the `BusinessLayer` project. Within the solution, the flow of data generally starts in the UI, where ViewModels implement `IUser` and use `UserValidator` to check input. Once valid, the UI constructs a `UserDto` and passes it to `IUserService` in the `BusinessLayer`. The `BusinessLayer` then maps this `UserDto` to its internal `User` entity for persistence.
+The dependency structure within `Dto` is strictly unidirectional from the concrete to the abstract. `UserDto` implements `IUser`, meaning any `IUser` reference can hold a `UserDto`, but not vice versa. This creates a deliberate asymmetry: the business layer (`IUserService`) uses `UserDto` to handle both reading (which needs `Id`) and writing (which needs names), while the UI layer (`AddUserViewModel`) interacts with `IUser` through its view model base, relying on `Validation/` for input checks.
+
+This split means that a user object is effectively reshaped at the layer boundary. The UI creates an `IUser` via the view model, the service layer converts it to/from `UserDto` to manage the `Id`, and the validation rules apply only to the `IUser` shape. Consequently, changing the `IUser` contract impacts both the UI and the validation logic, while changing `UserDto` primarily affects the service layer and how it maps to the database entities.
 
 ```mermaid
 flowchart TD
-    subgraph "Dto Package"
-        direction TB
-        IUser[IUser Interface]
-        UserDto[UserDto]
-        Validator[UserValidator]
-        
-        UserDto -->|implements| IUser
-    end
-    
-    subgraph "Validation Subdirectory"
-        ValidatorClass[UserValidator.cs]
-    end
-    
-    subgraph "BusinessLayer"
-        Service[IUserService]
-    end
-    
-    subgraph "UI Layer"
-        ViewModel[AddUserViewModel]
+    subgraph "Dto Project"
+        UD["UserDto.cs"]
+        IU["IUser.cs"]
+        V["Validation/"]
     end
 
-    ValidatorClass -->|implements| Validator
-    ViewModel -->|implements| IUser
-    ViewModel -->|uses| Validator
-    Service -->|consumes| UserDto
+    UD -->|implements| IU
+    V -->|validates| IU
 ```
 
-### Rough edges
-
-`UserDto` implements `IUser`, but `IUser` does not include the `Id` property. Consequently, any code that accepts `IUser` cannot access the user's ID without casting back to `UserDto`, which breaks the abstraction slightly and requires careful handling in the UI or business layers if identity is needed.
-
 ## Contents
-- [Dto.csproj](Dto/Dto.md)
 - [IUser.cs](Dto/IUser.md)
 - [UserDto.cs](Dto/UserDto.md)
 - [Validation/](Dto/Validation.md)

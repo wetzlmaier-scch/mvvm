@@ -1,24 +1,20 @@
-# DataAccessLayer/SortOrder.cs
-
 ### Purpose
 
-`DataAccessLayer/SortOrder.cs` defines a small public enum, `SortOrder`, with two members — `Ascending` and `Descending` — intended to express the direction in which query results should be sorted. It is a shared vocabulary for the data access layer: code that issues queries can refer to a sort direction by this type rather than by strings or booleans.
+`DataAccessLayer/SortOrder.cs` defines a single public enum, `SortOrder`, with two members — `Ascending` and `Descending` — expressing the direction in which query results should be sorted. It exists as a shared, strongly-typed vocabulary for sort direction instead of call sites using raw strings or magic integers.
 
 ### Role in the Codebase
 
-It is a leaf data type in the `DataAccessLayer` project, which otherwise holds the persistence abstractions (`IEntity<TKey>`, `Entity<TKey>`, `IRepository<TKey>`, `IRepositoryFactory`, `IUnitOfWork`) plus `DataAccessException`. This enum is the only sort-related type in the project. It has no logic of its own and no dependencies.
+The file lives in `DataAccessLayer`, a small contract-and-abstraction project holding the data-access interfaces (`IRepository.cs`, `IRepositoryFactory.cs`, `IUnitOfWork.cs`) and entity types (`IEntity.cs`, `Entity.cs`) plus the shared exception `DataAccessException.cs`. `SortOrder` is a support type alongside those contracts: it names a concept the data-access layer cares about, sort direction, so any future query API in this project can reference one definition.
 
 ### Relationships
 
-- No usings and no references to other code in the repository; it is fully self-contained.
-- Nothing in the repository currently uses it. The `IRepository<TKey>` interface in `IRepository.cs` exposes query methods (`GetQueryable`, `Find`, `GetAll`, …) that return unordered `IQueryable`/`IEnumerable` results and take no ordering parameter; `IHibernateRepository<TKey>` in `DataAccessLayer.Hibernate` adds only `Save` and a `UnitOfWork`. So the enum is presently a definition awaiting consumers rather than part of a live code path.
-- Removing it would break compilation of any project that references it, but today nothing does.
+It has no imports and no dependencies — it is a plain C# enum with no base types or attributes. It sits in the `DataAccessLayer` namespace, so consumers would reference it as `DataAccessLayer.SortOrder.Descending` or with a `using DataAccessLayer;` directive.
 
 ### Behavior & Details
 
-- `public enum SortOrder { Ascending, Descending }` — an un-decorated C# enum, so the members get the default underlying `int` values: `Ascending = 0`, `Descending = 1`. `Ascending` is therefore also the value `default(SortOrder)` resolves to.
-- Because it is in the `DataAccessLayer` namespace, consumers can use it as `DataAccessLayer.SortOrder.Descending` or with a `using DataAccessLayer;` directive.
+- The single line `public enum SortOrder { Ascending, Descending }` is an un-decorated C# enum, so the members get the default underlying `int` values: `Ascending = 0`, `Descending = 1`. `Ascending` is therefore also the implicit default when a `SortOrder` parameter is initialized to zero.
+- The enum has no current callers anywhere in the repository. In particular, `IRepository<T>` in `IRepository.cs` exposes no ordering parameter — its members accept predicates and return `IQueryable`/collections with no `SortOrder` involved. It is also not accepted by `IRepositoryFactory` or `IUnitOfWork`. Its usage is implied only by its name and location.
 
 ### Rough edges
 
-The enum has no current callers in the repository — no interface, repository implementation, or query API accepts a `SortOrder` — so its intended usage is only implied by its name and location.
+`SortOrder` is defined but not referenced by any other type in the project, so a reader cannot tell from the code which API is meant to accept it.

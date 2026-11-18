@@ -2,43 +2,40 @@
 
 ### Purpose
 
-This file defines `HibernateRepositoryFactory<TKey>`, the class that builds the NHibernate `ISessionFactory` once for the application and then mints repository instances from it. It exists so that repository creation can be decoupled from the costly one-time NHibernate bootstrap (database configuration, schema update, mapping assembly loading) — the bootstrap happens in the constructor, and every subsequent repository is just a new stateless session.
-
-It implements `IHibernateRepositoryFactory<TKey>` (same folder), which in turn derives from `DataAccessLayer.IRepositoryFactory<IHibernateRepository<TKey>, TKey>` defined in `DataAccessLayer/IRepositoryFactory.cs`. That base interface declares `TRepository Create()` and `void Drop()`; this class adds the concrete `new IHibernateRepository<TKey> Create()` signature from the derived interface.
+This file defines `HibernateRepositoryFactory<TKey>`, the class that builds the NHibernate `ISessionFactory` once per process and then mints repository instances from it. It exists so that business-layer code can ask for `IHibernateRepository<TKey>` instances without knowing how NHibernate is configured, which assemblies contain the Fluent mappings, or how the schema is kept current.
 
 ### Role in the Codebase
 
-Inside `DataAccessLayer.Hibernate`, this class is the entry point to the data layer. The business layer never touches NHibernate directly; it gets repositories through the factory chain:
+`HibernateRepositoryFactory<TKey>` is the bootstrap point of the `DataAccessLayer.Hibernate` project: it is the only place in the wired-up code path that actually talks to FluentNHibernate and opens sessions. The concrete class is not used directly — `BusinessLayer.RepositoryFactory` (`BusinessLayer/RepositoryFactory.cs`) derives from `HibernateRepositoryFactory<int>` and is MEF-exported as `IRepositoryFactory`, so every repository in the application flows through this class's constructor and `Create()`.
 
-- `BusinessLayer.RepositoryFactory` (in `BusinessLayer/RepositoryFactory.cs`) inherits `HibernateRepositoryFactory<int>` and implements `IRepositoryFactory` (i.e. `IHibernateRepositoryFactory<int>`), passing `context.ConnectionString` and `context.MappingAssemblies` from an `IModelContext` into the base constructor. It is exported via MEF (`[Export(typeof(IRepositoryFactory))]`).
-- Consumers such as `BusinessLayer.UserService` depend on `IRepositoryFactory` and call `_repositoryFactory.Create()` inside a `using` block per operation.
-
-If this class were removed, `BusinessLayer.RepositoryFactory` would have no base class to bootstrap from, and no repository could be created. Note the factory itself is created only once in the process — a second construction attempt is an error (see below).
+If it were removed, the business layer would have nothing to resolve `IRepositoryFactory` from, and no session factory would ever be built (the sibling `SessionFactoryBuilder` duplicates some of this configuration logic but is not called anywhere in the repository).
 
 ### Relationships
 
-- **`IHibernateRepositoryFactory<TKey>`** (`DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs`) — the interface implemented here.
-- **`HibernateRepository<TKey>`** (`DataAccessLayer.Hibernate/HibernateRepository.cs`) — what `Create()` returns; it wraps the `IStatelessSession` this factory opens, exposing `GetQueryable`, `Find`, `Save`, a lazily created `UnitOfWork` (`HibernateUnitOfWork`), and `Dispose()`.
-- **`IModelContext`** (`IModelContext.cs` / `ModelContextBase.cs`) — the source of the `connectionString` and `mappingAssemblies` arguments, supplied by the caller (`RepositoryFactory`) rather than read from configuration here.
-- **FluentNHibernate / NHibernate** (external libraries) — `Fluently.Configure()`, `MsSqlConfiguration`, `MicrosoftDataSqlClientDriver`, `SchemaUpdate` are all from those packages.
+- **Implements** `IHibernateRepositoryFactory<TKey>` (same folder), which itself derives from `DataAccessLayer.IRepositoryFactory<IHibernateRepository<TKey>, TKey>` (`DataAccessLayer/IRepositoryFactory.cs`) and declares `new IHibernateRepository<TKey> Create()`.
+- **Produces** `HibernateRepository<TKey>` (same folder) — one instance per `Create()` call, each wrapping its own `IStatelessSession` opened from `_sessionFactory`.
+- **Subclassed by** `BusinessLayer.RepositoryFactory`, whose MEF importing constructor forwards `IModelContext.ConnectionString` and `IModelContext.MappingAssemblies` into this class's protected constructor. Because the constructor is `protected`, `HibernateRepositoryFactory<TKey>` can only be instantiated through a subclass — the only one that exists is `RepositoryFactory`.
+- Uses FluentNHibernate and NHibernate (third-party) to configure a SQL Server 2012 database with the Microsoft data provider and to load Fluent mappings from the named assemblies.
 
 ### Behavior & Details
 
-**Constructor** `HibernateRepositoryFactory(string connectionString, string[] mappingAssemblies)`:
+**Constructor** — `protected HibernateRepositoryFactory(string connectionString, string[] mappingAssemblies)`:
 
-- **Static `IsInitialized` guard.** A second call to any constructor throws `InvalidOperationException("Already initialized")`. The flag is `static`, so this is process-wide: the application is designed to have exactly one session factory.
-- **Database configuration** is hardcoded to SQL Server 2012 via `MsSqlConfiguration.MsSql2012`, using the `MicrosoftDataSqlClientDriver` and `.ShowSql()` (SQL statements echoed to the log).
-- **Schema auto-update:** `ExposeConfiguration(cfg => new SchemaUpdate(cfg).Execute(false, true))` runs an NHibernate schema *update* against the database on every factory construction, before the session factory is built. This mutates the database schema to match the mappings.
-- **Mappings:** for each assembly name in `mappingAssemblies`, `Assembly.Load(assembly)` loads it by string name and all its Fluent NHibernate mappings are added. The assembly names are whatever `IModelContext` provides (e.g. `"DataAccessLayer.Hibernate"`).
-- **Failure:** any exception during this setup is wrapped in `DataAccessException("Error initializing Hibernate repository factory", e)`. Note the static flag is set only after success, so a failed construction allows a retry — but a successful one permanently blocks further construction for the process lifetime.
+1. Guards on a **static** `IsInitialized` flag. Because it is static and lives on the generic type, the guard is per `TKey`: only the *first* constructed `HibernateRepositoryFactory<SomeTKey>` in the process succeeds; any second construction of the same closed type throws `InvalidOperationException("Already initialized")`. It does not prevent constructing `HibernateRepositoryFactory<int>` and `HibernateRepositoryFactory<string>` side by side — only one factory per key type.
+2. Builds a FluentNHibernate configuration: `MsSql2012` dialect, the given connection string, `MicrosoftDataSqlClientDriver`, and `ShowSql()` (SQL statements are printed to the console, always).
+3. In `ExposeConfiguration`, runs `new SchemaUpdate(cfg).Execute(false, true)` — so constructing the factory issues `ALTER TABLE`/`CREATE` DDL against the live database as a side effect of startup.
+4. For each name in `mappingAssemblies`, calls `Assembly.Load(assembly)` and adds that assembly's Fluent mappings to the configuration. Note the inputs are assembly *names as strings*, not `Assembly` objects.
+5. Calls `BuildSessionFactory()` and stores the result in `_sessionFactory`. `IsInitialized` is set to `true` only after this succeeds.
+6. Any exception in steps 2–5 is caught and rethrown wrapped in a `DataAccessException` with the message "Error initializing Hibernate repository factory".
 
-**`Create()`** returns `new HibernateRepository<TKey>(_sessionFactory.OpenStatelessSession())`. Each repository gets its **own stateless session** — stateless sessions hold no identity map or first-level cache, so every repository instance is independent and must be disposed by the caller (the business layer does this with `using var repository = ...`). The factory holds only the `_sessionFactory`; repositories are not tracked or pooled.
+**`Create()`** — Opens a new `IStatelessSession` from the stored factory and returns a fresh `HibernateRepository<TKey>` around it. Each call gives the caller an independent, disposable repository; there is no pooling or caching of sessions. (Stateless sessions mean no identity map and no first-level cache, which is why the `Save` path in `HibernateRepository` uses `InsertAsync`.)
 
-**Explicit interface implementation.** `IRepositoryFactory<IHibernateRepository<TKey>, TKey>.Create()` is implemented explicitly and simply delegates to `Create()`, satisfying the base `DataAccessLayer.IRepositoryFactory<TRepository, TKey>` contract through the interface hierarchy.
+**Explicit interface implementation** — `IRepositoryFactory<IHibernateRepository<TKey>, TKey>.Create()` is implemented explicitly and simply delegates to the public `Create()`. This satisfies the base `DataAccessLayer.IRepositoryFactory<TRepository, TKey>.Create()` slot without creating a second public overload.
 
-**`Drop()`** throws `NotImplementedException` — the schema-teardown half of the interface contract is a stub; there is no way to drop the schema through this factory.
+**`Drop()`** — Declared in `DataAccessLayer.IRepositoryFactory`, but here it throws `NotImplementedException`. There is no working teardown path for the session factory anywhere in the repository; callers do not use it.
 
 ### Rough edges
 
-- The session factory construction logic here (connection string, `SchemaUpdate`, loading mappings by assembly name) duplicates `SessionFactoryBuilder.BuildSessionFactory` in the same folder, except the factory's version also runs the schema update. The two can drift.
-- `Drop()` is unimplemented, and `Create()` returns a stateless session with no disposal tracking — callers must remember to dispose each repository, and there is nothing in the factory to catch them if they don't.
+- `Drop()` is an unimplemented stub, so the session factory is never disposed or reconfigured; the only lifecycle is build-once, run-forever.
+- The `IsInitialized` flag is static on the generic type yet only ever set in the success path: if a second construction is attempted for the same `TKey` while the first constructor is mid-flight, the check can race. In practice this does not matter because MEF constructs `RepositoryFactory` once, but the flag gives no protection at all across different `TKey` values and does not survive a failed startup followed by a retry of a *different* key type ordering.
+- Schema DDL (`SchemaUpdate`) runs inside the constructor with `ShowSql()` always on, so any construction attempt mutates the database and logs SQL — even one that ends in a thrown `DataAccessException` (the DDL in `ExposeConfiguration` runs before `BuildSessionFactory`).

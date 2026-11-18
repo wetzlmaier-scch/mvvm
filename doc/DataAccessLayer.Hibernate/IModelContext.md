@@ -2,23 +2,23 @@
 
 ### Purpose
 
-This file defines `IModelContext`, a small two-property contract that carries the database connection string and the list of mapping assemblies needed to configure NHibernate. It exists so that consumers in the data-access layer can receive this configuration through dependency injection rather than reading `App.config` or hard-coding assembly names themselves.
+`IModelContext` is a two-property contract that carries everything the data-access layer needs to configure NHibernate: the database `ConnectionString` and the `MappingAssemblies` (assembly names containing Fluent NHibernate mappings). It exists so that `DataAccessLayer.Hibernate` can build its NHibernate session factory without knowing where the connection settings come from — the composition root in another project supplies them through this interface.
 
 ### Role in the Codebase
 
-`IModelContext` is the configuration seam between the composition root (the `BusinessLayer` project) and the `DataAccessLayer.Hibernate` project. The data-access layer knows how to build an NHibernate `ISessionFactory` given a connection string and mapping assemblies, but it does not know *where* those values come from. The `BusinessLayer` project supplies them: `BusinessLayer/ModelContext.cs` exports a concrete `ModelContext` (built on `ModelContextBase`) with `[Export(typeof(IModelContext))]`, pulling the connection string from `ConfigurationManager.AppSettings["ConnectionString"]` and the mapping assemblies from a hard-coded array.
+The interface is the configuration seam between `BusinessLayer` (composition root) and `DataAccessLayer.Hibernate` (ORM machinery). It lives in the data-access project because that is the side that *consumes* the values; the business layer only provides an implementation. If it were removed, `ModelContextBase`, `BusinessLayer.ModelContext`, and `RepositoryFactory` would all have no shared contract to work against — the connection string and mapping list would have no typed channel between the layers.
 
 ### Relationships
 
-- **`ModelContextBase`** (`DataAccessLayer.Hibernate/ModelContextBase.cs`): the abstract base class in the same project that implements `IModelContext`. Concrete contexts (like `BusinessLayer.ModelContext`) inherit from it, which stores the constructor-supplied values in the two read-only properties.
-- **`BusinessLayer/RepositoryFactory.cs`**: the main consumer. Its `[ImportingConstructor]` takes an `IModelContext` and forwards `context.ConnectionString` and `context.MappingAssemblies` to `HibernateRepositoryFactory<TKey>`'s base constructor.
-- **`BusinessLayer/ModelContext.cs`**: the concrete implementation that MEF exports for this interface.
-- **`HibernateRepositoryFactory<TKey>`** (`DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`): receives the two values and uses them with FluentNHibernate to configure the database, load Fluent mappings from the named assemblies, run a schema update, and build the `ISessionFactory`.
+- **Implemented by** `ModelContextBase` (same directory, `ModelContextBase.cs`): the abstract base in this project that stores both properties, read via get-only auto-properties set in its constructor. Concrete contexts derive from it rather than from the interface directly.
+- **Concrete implementation:** `ModelContext` in `BusinessLayer/ModelContext.cs`, a primary-constructor class over `ModelContextBase` that reads the connection string from `ConfigurationManager.AppSettings["ConnectionString"]` and hard-codes `["Entity.Hibernate"]` as the mapping assemblies. It is MEF-exported with `[Export(typeof(IModelContext))]`.
+- **Consumed by** `RepositoryFactory` in `BusinessLayer/RepositoryFactory.cs`, whose `[ImportingConstructor]` takes an `IModelContext` and forwards `context.ConnectionString` and `context.MappingAssemblies` to the `HibernateRepositoryFactory<int>` base constructor. That base constructor uses the two values to configure NHibernate (MS SQL 2012 driver, schema update) and load each named assembly's Fluent mappings.
 
 ### Behavior & Details
 
-- **`MappingAssemblies`** (`string[]`): the names of the assemblies that contain FluentNHibernate mapping files. `SessionFactoryBuilder` and `HibernateRepositoryFactory` each iterate over this array, call `Assembly.Load(name)`, and register the mappings found in each assembly. A caller adding a new entity-mapping assembly therefore only needs to update the concrete context, not the data-access layer.
-- **`ConnectionString`** (`string`): passed to `MsSqlConfiguration.MsSql2012.ConnectionString(...)` along with `MicrosoftDataSqlClientDriver`, i.e. this interface assumes a SQL Server database.
-- Both members are read-only getters; the interface is implemented once in `ModelContextBase`, which assigns the values in its constructor. There is no default implementation, no state, and no lifetime management — it is a pure data contract.
+The interface declares only two read-only members:
 
-Rough edges: `SessionFactoryBuilder.BuildSessionFactory` duplicates the entire session-factory configuration logic of `HibernateRepositoryFactory`'s constructor (including the `SchemaUpdate` call), so `SessionFactoryBuilder` and `HibernateRepositoryFactory` can drift apart when NHibernate configuration changes. Also, `HibernateRepositoryFactory` has a static `IsInitialized` flag that throws `InvalidOperationException("Already initialized")` if a second factory is ever constructed, meaning the injected `IModelContext` is effectively usable by exactly one factory instance per process.
+- `string[] MappingAssemblies` — the names of the assemblies to load and scan for Fluent NHibernate mappings. `HibernateRepositoryFactory`'s constructor calls `Assembly.Load(assembly)` for each name, so entries must be loadable assembly names (like `"Entity.Hibernate"`), not namespaces or file paths.
+- `string ConnectionString` — the raw connection string, interpreted by the consumer as an MS SQL 2012 connection (the driver and dialect are fixed in `HibernateRepositoryFactory`, not configurable through this interface).
+
+Both properties are getters only; the values are fixed for the lifetime of the context instance, which is constructed once by the MEF container and passed through to the single `RepositoryFactory` instance (which itself is single-use — its base constructor throws `InvalidOperationException("Already initialized")` on a second construction).

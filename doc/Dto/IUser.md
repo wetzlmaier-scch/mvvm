@@ -1,20 +1,25 @@
 ### Purpose
 
-`Dto/IUser.cs` defines `IUser`, a two-property contract for anything that carries a user's first and last name. It exists so the presentation and validation layers can talk about "a user" in terms of just the name fields, without depending on the concrete `UserDto` with its `Id` or on the persistence entities.
+`Dto/IUser.cs` defines `IUser`, a two-property contract for anything that carries a user's first and last name. It exists so the validation and view-model layers can work with "a user" as a name-bearing shape without needing the full persistence model. The interface has no methods — only `FirstName` and `LastName` string properties — so it captures just the data a form displays and a validator checks.
 
 ### Role in the Codebase
 
-It is a small shared contract at the bottom of the layering: the `Dto` project defines the interface and `UserDto` (in `Dto/UserDto.cs`) is its only concrete implementation. The view models and validation live in terms of `IUser` rather than `UserDto`, which lets a form or validator bind to name-only data — for example, a new user being typed in that doesn't have an `Id` yet — before it is packaged into a `UserDto` for the service layer.
+`IUser` is the shared contract at the bottom of the layering in the `Dto` project. It is the minimal "user shape" that the UI side of the application programs against, while the business layer (`BusinessLayer/IUserService.cs`) deliberately uses the richer concrete type `UserDto` at its own boundary. If it were removed, `UserDto` would lose its interface, `UserValidator` (`Dto/Validation/UserValidator.cs`) would have nothing to validate against, and `IAddUserViewModel` would lose the `FirstName`/`LastName` declarations its implementations inherit.
 
 ### Relationships
 
-- `Dto/UserDto.cs` — `UserDto` implements `IUser` and adds `Id`; it is the object `IUserService` (in `BusinessLayer/IUserService.cs`) actually accepts and returns.
-- `Dto/Validation/UserValidator.cs` — a FluentValidation `AbstractValidator<IUser>` that requires `FirstName` and `LastName` to be non-empty.
-- `UserManagement/ViewModel/IAddUserViewModel.cs` — extends `IUser`, so `AddUserViewModel` inherits the `FirstName`/`LastName` properties and derives from `ValidatableViewModelBase<IUser>(new UserValidator())`, which applies the validator to the view model itself.
-- `IUserService` uses `UserDto` rather than `IUser` at its boundary; `IUser` is the view-model-side shape.
+- `Dto/UserDto.cs` — `UserDto` implements `IUser` and adds `Id`. It is the object `IUserService.GetActiveUsers()` returns and `IUserService.AddUser()` accepts, but it does so through `UserDto`, not `IUser`.
+- `Dto/Validation/UserValidator.cs` — a FluentValidation `AbstractValidator<IUser>` that requires `FirstName` and `LastName` to be non-empty. Validation therefore operates on the interface shape, not the DTO.
+- `UserManagement/ViewModel/IAddUserViewModel.cs` — extends `IUser`, so `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`) inherits the `FirstName`/`LastName` properties and derives from `ValidatableViewModelBase<IUser>(new UserValidator())`. This is the main way the interface reaches the UI: the view model *is* an `IUser`.
 
 ### Behavior & Details
 
-The interface has no logic: just `string FirstName { get; set; }` and `string LastName { get; set; }`. Both are read/write, which is intentional — `AddUserViewModel`'s `[ObservableProperty]`-generated properties back the interface with change notification, and the base view model's validation is run against the implementing object. `UserDto` marks the same properties `required`, so a `UserDto` cannot be constructed without names, while the interface itself imposes no such constraint.
+There is no behaviour to describe beyond the two properties — `FirstName` and `LastName`, each a get/set `string`. Two things are worth knowing:
 
-Note the property set differs from `UserDto` on purpose: `IUser` deliberately omits `Id`, since the add-user flow has no identity to expose at the form level.
+- The property set is narrower than `UserDto` on purpose. `IUser` omits `Id`, since the add-user form has no identity to show. The consequence is that any code accepting an `IUser` cannot read the user's `Id` without casting back to `UserDto`.
+- The interface itself imposes no nullability; the only enforced constraint is the non-empty rule in `UserValidator`, which `AddUserViewModel` applies.
+
+### Rough edges
+
+- The name-based split between `IUser` (view-model side) and `UserDto` (service side) for the same logical entity means a user object must be reshaped at the layer boundary, and `Id` is invisible through the interface.
+- `IUserService` uses `UserDto` while everything else in the `Dto` project and the UI validates against `IUser`, so the interface and the service boundary do not share a common user type.

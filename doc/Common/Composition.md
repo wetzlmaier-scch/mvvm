@@ -1,46 +1,47 @@
 ### Purpose
 
-The `Common/Composition` directory serves as the composition bootstrap for the application. It contains the logic required to automatically discover, load, and wire up application modules at startup using MEF (`System.ComponentModel.Composition`). Its single responsibility is to construct a `CompositionContainer` from the available assemblies, allowing host applications to resolve dependencies without manual registration.
+`Common/Composition` is a single-file utility module responsible for bootstrapping the Module-Extension Framework (MEF) dependency injection container for all host applications in the repository. It contains only `CompositionHelper.cs`, which abstracts the complex logic of discovering, loading, and cataloging assemblies so that `WinFormsApp1`, `WpfApp1`, and `ConsoleApp1` can uniformly resolve their `IModuleController` exports. This directory exists to centralize MEF initialization, preventing each host from duplicating assembly-scanning code.
 
 ### Software Components
 
-This directory contains a single source file: `CompositionHelper.cs`.
+The directory contains one source file:
 
-*   **`CompositionHelper`**: A static class that exposes the [CreateCompositionContainer](Common/Composition/CompositionHelper.md) method. It handles the enumeration of `.dll` and `.exe` files in the application directory, loads them as assemblies, and aggregates them into a MEF `AggregateCatalog`. It ensures the `Common` and entry-point assemblies are included and returns a configured `CompositionContainer`.
+*   **[CompositionHelper](Common/Composition/CompositionHelper.md)**: A static class exposing `CreateCompositionContainer`. This component enumerates `.dll` and `.exe` files in the application's output directory, loads them into a MEF `AggregateCatalog`, and returns a composed `CompositionContainer`. It handles dependency on `Common.Reflection.AssemblyHelper` for file extension constants and wraps the `System.ComponentModel.Composition` framework.
 
 ### Relationships
 
-`CompositionHelper` depends on `Common/Reflection/AssemblyHelper` specifically for its `Extensions` constant, which defines the file extensions (`.dll`, `.exe`) used to identify candidate assemblies. It relies entirely on the external .NET MEF namespace (`System.ComponentModel.Composition.Hosting`) for the actual composition logic.
+`CompositionHelper` acts as a foundational bootstrap layer for the repository's host applications. It has a single internal dependency: it uses `Common.Reflection.AssemblyHelper` to determine valid file extensions for assembly discovery. Externally, it wraps the MEF framework types (`CompositionContainer`, `AggregateCatalog`, `AssemblyCatalog`).
 
-The directory is consumed by the host applications (`Mvvm.Wpf`, `WinFormsApp1`, `ConsoleApp1`). These hosts call `CreateCompositionContainer` during initialization, use the returned container to resolve `IModuleController` or other specific exports, and dispose the container on exit. No other files exist in this directory, so there are no internal sibling dependencies.
+The dependency direction is strictly inward toward this helper from the hosts:
+1.  **Hosts depend on `CompositionHelper`**: `WinFormsApp1/Program.cs`, `Mvvm.Wpf/MvvmApplication.cs`, and `ConsoleApp1/Program.cs` all call `CreateCompositionContainer` during their startup sequences.
+2.  **Container consumers depend on the output**: Once the container is built, hosts resolve `IModuleController` exports (e.g., `DefaultModuleController` classes in the host projects) from it. `CompositionHelper` does not know about these specific controllers; it only ensures the assemblies containing them are loaded and visible to MEF.
 
 ```mermaid
 flowchart TD
-    subgraph Hosts
-        WPF[Mvvm.Wpf]
-        WinForms[WinFormsApp1]
-        Console[ConsoleApp1]
+    subgraph "Common Project"
+        CH["CompositionHelper.cs<br/>(Builds MEF Container)"]
+        AH["Reflection/AssemblyHelper<br/>(File Extensions)"]
     end
-
-    subgraph Common/Composition
-        CH[CompositionHelper]
+    
+    subgraph "Host Applications"
+        WF["WinFormsApp1/Program.cs"]
+        WPF["Mvvm.Wpf/MvvmApplication.cs"]
+        CA["ConsoleApp1/Program.cs"]
     end
-
-    subgraph Dependencies
-        Ref[AssemblyHelper<br/>Common/Reflection]
-        MEF[.NET MEF<br/>System.ComponentModel.Composition]
-    end
-
-    WPF -->|calls| CH
-    WinForms -->|calls| CH
-    Console -->|calls| CH
-    CH -->|uses Extensions| Ref
-    CH -->|uses types from| MEF
+    
+    MEF["System.ComponentModel.Composition<br/>(MEF Framework)"]
+    
+    WF -->|Calls CreateContainer| CH
+    WPF -->|Calls CreateContainer| CH
+    CA -->|Calls CreateContainer| CH
+    
+    CH -->|Uses Extensions| AH
+    CH -->|Wraps Framework Types| MEF
 ```
 
 ### Rough edges
 
-Failures during the assembly loading process (e.g., corrupt files or duplicate assemblies) are logged only to `Console.WriteLine`. In non-console host applications like WPF, this output is invisible, potentially causing modules to be silently missing from the composition container without any user-facing error indication.
+The `ConsoleApp1` host incorrectly passes its own executable name to the `ignoreAssemblies` parameter of `CreateCompositionContainer`, intending to exclude it from cataloging, but the logic adds the entry assembly regardless, rendering the ignore list ineffective in that context. Additionally, the helper uses `Console.WriteLine` for error diagnostics, which is invisible in WPF hosts where no console is attached, potentially masking assembly loading failures.
 
 ## Contents
 - [CompositionHelper.cs](Common/Composition/CompositionHelper.md)

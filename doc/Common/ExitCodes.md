@@ -1,34 +1,26 @@
 ### Purpose
 
-`Common/ExitCodes.cs` defines the process exit codes the application returns when it cannot run. It exists so that the several application entry points in this solution report their outcomes with named, consistent values instead of bare integers, letting anything inspecting the process (a test harness, a supervisor, a developer reading a return code) tell "started fine" apart from "failed to start" without magic numbers.
+`Common/ExitCodes.cs` (in the `Common` namespace) defines the process exit codes the application hosts return when they terminate. It exists so the two host applications in the solution report success and failure to the operating system with a shared, named vocabulary instead of scattered magic numbers — `Main` returning `0` on success and `-1` when module loading fails.
+
+The class `ExitCodes` is a `public static class` of three `const int` members. It has no base type, no state, and no dependencies.
 
 ### Role in the Codebase
 
-The class lives in the `Common` project, the shared utility project every other project in the solution references. It is a small helper, not an architectural component: a `public static class` with three compile-time constants. Nothing else in `Common` depends on it; it only depends in the reverse direction — the host applications consume its constants when they must terminate.
-
-If it were removed, the two hosts that reference it (`WinFormsApp1/Program.cs`, `Mvvm.Wpf/MvvmApplication.cs`) would fail to compile, since they reference the constants directly rather than hard-coding the numbers.
+It is one of several small helper types under `Common/` (alongside `Composition/`, `Converter/`, `Diagnostics/`, `Reflection/`, and `Windows/`) compiled into the shared `Common` assembly (`Common.csproj`). The hosts reference that project and consume these constants from their entry points. Removing the file would break compilation of the entry points below; nothing else in the repository uses it.
 
 ### Relationships
 
-- **`Common/ExitCodes.cs`** (this file) — defines the constants in namespace `Common`. No imports, no base types.
-- **`WinFormsApp1/Program.cs`** — the WinForms host's `Main` returns `ExitCodes.Ok` on successful module startup and `ExitCodes.Error` when module loading fails (`ReflectionTypeLoadException`) or no `IModuleController` is found.
-- **`Mvvm.Wpf/MvvmApplication.cs`** — the WPF host's `OnStartup` calls `Current.Shutdown(ExitCodes.Error)` in the same two failure cases.
-
-`ConsoleApp1/Program.cs` is a host too but never references these constants; it signals failure by throwing instead of returning a code.
+- `WinFormsApp1/Program.cs` — the WinForms host's `Main` returns `ExitCodes.Ok` after the module message loop ends, and `ExitCodes.Error` in two failure paths: a caught `ReflectionTypeLoadException` from `GetExportedValues<IModuleController>()`, and the zero-modules case (which also shows a "No module found." dialog).
+- `Mvvm.Wpf/MvvmApplication.cs` — the WPF host's `OnStartup` calls `Current.Shutdown(ExitCodes.Error)` in the same two failure cases; it never shuts down with `ExitCodes.Ok` on success.
 
 ### Behavior & Details
 
-Three constants, all compile-time (`const`), so their use in return statements and `Shutdown` calls is resolved at compile time:
+- `Ok = 0` — the standard success code; the only constant the hosts use for a normal exit.
+- `Error = -1` — the generic failure code, used by both hosts for every fatal startup path. Note that `-1` is not a conventional OS exit code (process exit codes are usually 32-bit values where `0` means success); the hosts return or pass it as-is, so external consumers of these exit codes inherit whatever the platform truncates it to.
+- `InsufficientPrivileges = -2` — defined but never referenced by any code in this repository. It is available for a host that needs to distinguish a permission failure from a generic one, but no current caller does.
 
-- `Ok = 0` — the conventional "success" exit status, returned by `WinFormsApp1`'s `Main` after all modules have been initialized and started.
-- `Error = -1` — a generic "startup failed" status, used when the MEF composition container cannot load module types or no module controllers were exported.
-- `InsufficientPrivileges = -2` — currently defined but not referenced anywhere else in the repository. It is available for a host to return when it needs to distinguish a permission failure from a generic error, but no host does so today.
-
-Two caveats worth knowing:
-
-- The negative values are not what an OS process actually reports. On Windows, process exit codes are 32-bit unsigned values, so a process exiting with `-1` surfaces as `0xFFFFFFFF` (4294967295) and `-2` as `4294967294`. Any external code that checks the exit code must either compare against those wrapped values or treat "anything non-zero" as failure. Within the process, the constants are fine.
-- Only `Ok` and `Error` are in use. The constant set is a fixed vocabulary — a new failure class (e.g. using `InsufficientPrivileges`) requires every host's failure paths to agree on which value to return, since the callers are not centralized.
+Because the constants are `const int`, values are inlined at compile time into the consuming hosts — there is no runtime lookup, and changing a value requires recompiling the hosts.
 
 ### Rough edges
 
-`InsufficientPrivileges` has no callers in the repository, so it is either reserved for a host that does not (yet) exist in this solution or dead code. There is no central place where a host maps a specific failure to one of these codes — each entry point picks the constant inline, so the vocabulary is only as consistent as the hosts' discipline.
+`InsufficientPrivileges` has no callers in the repository, so it is either reserved for a host that does not (yet) exist in this solution or dead code. The negative values (`-1`, `-2`) are unusual for process exit codes and depend on the hosts passing them through unchanged.

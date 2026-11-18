@@ -2,37 +2,42 @@
 
 ### Purpose
 
-This class is the WinForms application's entry-point controller. It wires together the main form and the main view model via MEF (Managed Extensibility Framework) and drives the application's lifetime: initializing, showing the form, and closing it. It exists so that `Program.Main` can treat the WinForms host as a swappable "module" behind the framework-defined `IModuleController` interface in `Mvvm`.
+`DefaultModuleController` is the WinForms host's module controller. It implements the `IModuleController` lifecycle contract from the shared `Mvvm` project and exists to be discovered by MEF: it wires the application's main form (`UserForm`) to its view model (`UserViewModel`) and then starts the WinForms message loop. Without it, `Program.Main` would find no `IModuleController` exports from this assembly and exit with "No module found."
+
+A sibling class with the same name in `WpfApp1/Controller/DefaultModuleController.cs` plays the identical role for the WPF host, substituting `IMainView<bool?, double>` for the WinForms-specific `IMainView<DialogResult, int>`.
 
 ### Role in the Codebase
 
-The WinForms project is one of several host projects in this repository (a sibling `WpfApp1` contains an analog with the same name). The framework in `Mvvm` (`IModuleController`, `IMainViewModel`, `IMainView<TDialogResult, TDimension>`) is host-agnostic, and each host contributes its own module controller.
+The `Controller` directory is a single-file folder, and this class is its only occupant. It is the only `IModuleController` implementation in the `WinFormsApp1` project, which makes it the single point through which `Program.Main` drives the app's lifecycle:
 
-`Program.cs` builds a `CompositionContainer`, pulls out every exported `IModuleController` (this class, via its `[Export(typeof(IModuleController))]`), calls `Initialize()` on each, then `Run()` on each. Without this class there would be no exported controller in the WinForms host, and `Main` would exit with the "No module found." error.
+1. `Program.Main` builds a MEF `CompositionContainer` via `CompositionHelper.CreateCompositionContainer()`.
+2. `GetExportedValues<IModuleController>()` finds this class through its `[Export(typeof(IModuleController))]` attribute and constructs it, using the `[ImportingConstructor]` to satisfy its two parameters from other MEF exports.
+3. `Program.Main` calls `Initialize()` on every controller, then `Run()` on every controller. `Run()` here blocks for the whole lifetime of the app.
+4. `Program.Main` then returns `ExitCodes.Ok`.
+
+The protected `MainViewModel` and `MainView` properties exist so a future derived controller could reach the wired-up view and view model; the three virtual methods (`Initialize`, `Run`, `Shutdown`) are the extension points for customizing the lifecycle.
 
 ### Relationships
 
-- `IModuleController` (defined in `Mvvm/IModuleController.cs`) — the interface this class implements. Its three methods define the application lifecycle: `Initialize()`, `Run()`, `Shutdown()`.
-- `IMainView<DialogResult, int>` (defined in `Mvvm/IMainView.cs`) — the WinForms-specific main view interface. In this project, the concrete export is `UserForm` (`WinFormsApp1/View/UserForm.cs`).
-- `IMainViewModel` (defined in `Mvvm/IMainViewModel.cs`) — the main view model interface. The concrete export in the currently included projects is `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`).
-- `Program.cs` — the direct caller: it resolves this class from the composition container and invokes `Initialize()` and `Run()` in that order.
-
-The constructor is marked `[ImportingConstructor]`, so MEF resolves `UserForm` and `UserViewModel` by their respective `[Export]` attributes and injects them.
+- **`Mvvm.IModuleController`** (`Mvvm/IModuleController.cs`) — the interface implemented here. Declares exactly `Initialize()`, `Run()`, `Shutdown()` and nothing else.
+- **`Mvvm.IMainView<TDialogResult, TDimension>`** (`Mvvm/IMainView.cs`) — a WinForms-era abstraction over the main window. This class imports it instantiated as `IMainView<DialogResult, int>` (WinForms `DialogResult` and `int` for position/size). It extends `IDialogView<TDialogResult>`, which is where the `DataContext` property comes from, alongside `DialogResult`, `Show()`, and `Close()`. The concrete export the MEF container injects is `UserForm` (`WinFormsApp1/View/UserForm.cs`), which carries `[Export(typeof(IMainView<DialogResult, int>))]` and derives from `Form`.
+- **`Mvvm.IMainViewModel`** (`Mvvm/IMainViewModel.cs`) — the main window's view model contract; it also declares `CloseWindow()` and `Shutdown(int exitCode)`. The concrete export is `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`), tagged `[Export(typeof(IMainViewModel))]` (and `[Export(typeof(IUserViewModel))]`).
+- **`UserForm.DataContext`** — assigning `MainViewModel` to `MainView.DataContext` is what actually activates the UI: `UserForm` overrides the `DataContext` setter and, when it receives a non-null `IUserViewModel`, calls `SetupBindings(...)` to hook up its text boxes, list box, error provider, and button to the view model's properties and commands.
 
 ### Behavior & Details
 
-**Constructor.** Assigns the injected view and view model to the `protected` properties, then sets `MainView.DataContext = mainViewModel`. For `UserForm`, setting `DataContext` is the trigger that builds all of its WinForms `DataBindings` against the view model's sub-view models.
+**Constructor** — MEF calls the `[ImportingConstructor]` when composing. It stores both dependencies in the read-only `MainViewModel`/`MainView` properties and sets `MainView.DataContext = mainViewModel`. The `DataContext` assignment is the only observable side effect at construction: it is what makes the form's controls bind to `UserViewModel`. Because `UserForm` is the sole `IMainView<DialogResult, int>` export in this project, the `DataContext` assignment goes through the override that calls `SetupBindings`.
 
-**`Initialize()`** — Declared `virtual` with an empty body. It exists as a hook for derived classes that need to do pre-UI setup (loading configuration, warming caches, etc.). The base implementation does nothing.
+**`Initialize()`** — empty. The contract's "before-run" phase has nothing to do in this app, but the method exists (as `virtual`) so a derived controller can extend it without changing `Program.Main`.
 
-**`Run()`** — Calls `Application.Run((Form)MainView)`. This both shows the form and starts the WinForms message loop. It blocks until the form closes, at which point `Main` proceeds to its return. Note that the interface types `IMainView` and `IMainViewModel` both expose `CloseWindow`/`Close`/`Shutdown`, but none of those are invoked here — the lifetime is entirely driven by the user closing the form.
+**`Run()`** — `Application.Run((Form)MainView)`. This shows the main form and starts the WinForms message loop; the call blocks until the form closes, which is what ends the application. Note the explicit cast: `IMainView<DialogResult, int>` does not constrain the implementing type to be a `Form`, so the interface alone does not make this safe. Today the only export is `UserForm : Form`, so the cast holds — adding a non-`Form` implementation of `IMainView<DialogResult, int>` would fail here with an `InvalidCastException`.
 
-**`Shutdown()`** — Calls `MainView.Close()`. Notably, `Program.cs` never calls `Shutdown()` on any module controller. The form is closed implicitly when the user closes it (which unblocks `Application.Run`), and `Program` exits afterward. The method is therefore only relevant if a future caller of `IModuleController` (e.g. the `Mvvm.Wpf` host) actually drives the shutdown path.
+**`Shutdown()`** — calls `MainView.Close()`. `Program.Main` never invokes `Shutdown()` on any controller (it calls only `Initialize()` and `Run()`), so in this host the method is currently dead code. The form closes naturally when the user closes it, which unblocks `Run()`. The method would only matter for a hypothetical caller that drives the full `IModuleController` lifecycle (as `MvvmApplication` in `Mvvm.Wpf` does with `Reverse()` shutdown ordering).
 
-**`virtual` and `protected`.** `Initialize`, `Run`, and `Shutdown` are all `virtual`, and `MainView`/`MainViewModel` are `protected`. This signals the class is designed as a base for module-specific controllers that need access to the main view/view model but want to override the lifecycle behavior. No subclass exists in the current WinForms project; the class is used as-is.
+**View model lifecycle gap** — `IMainViewModel` declares `CloseWindow()` and `Shutdown(int exitCode)`, but this controller never calls them. The view model's own shutdown hook is not reached from here; the `int` return value from `Main()` in `Program` is a fixed `ExitCodes.Ok` regardless of how the form closed.
 
 ### Rough edges
 
-- `Program.cs` never calls `Shutdown()`, so `Shutdown()` in this class is dead code in the WinForms host. It is only meaningful if some other caller of `IModuleController` invokes the full lifecycle (the `Mvvm.Wpf` host does call `Shutdown()` in reverse order, but that is a different host project).
-- `Run()` casts `MainView` to `Form`. This is safe today because the only exported `IMainView<DialogResult, int>` is `UserForm : Form`, but the interface `IMainView<TDialogResult, TDimension>` does not guarantee the underlying type is a `Form`. A non-`Form` implementation would throw an `InvalidCastException` at runtime.
-- `IMainViewModel` declares `Shutdown(int exitCode)` and `CloseWindow()`, but this controller never calls them; the view model's own shutdown contract is not exercised from this class.
+- The `(Form)MainView` cast in `Run()` is guaranteed only by there being exactly one `IMainView<DialogResult, int>` export in this project. A second export of a non-`Form` type would break the cast.
+- `Shutdown()` is defined but never invoked by `Program.Main`, so the only controller-level shutdown path in the WinForms host is the implicit form close.
+- `IMainViewModel`'s `CloseWindow()` and `Shutdown(int)` are never called from this controller, so the view model cannot signal an exit code back to the host through the interface it advertises.

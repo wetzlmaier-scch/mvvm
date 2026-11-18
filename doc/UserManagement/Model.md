@@ -1,45 +1,56 @@
 ### Purpose
 
-`UserManagement/Model` defines the view-model data structures for the UserManagement module. It contains the [UserModel](UserManagement/Model/UserModel.md) class, which serves as the primary data binding object for the UI layer. By separating display logic from persistence entities like `UserDto`, it ensures the UI remains decoupled from the backend storage details.
+This directory holds the view-side data model for the UserManagement module. It contains `UserModel.cs`, which defines `UserModel`, a lightweight MVVM class used by the WPF UI for display and data binding.
+
+The contents belong together because `UserModel` is the sole display object in this module. It decouples the UI layer from the underlying business logic entities and DTOs, allowing the view to bind directly to user properties without accessing storage or service layers.
 
 ### Software Components
 
-The directory holds a single source file, `UserModel.cs`. This file defines the [UserModel](UserManagement/Model/UserModel.md) class, which extends `ObservableObject` from CommunityToolkit.Mvvm. It exposes `FirstName` and `LastName` properties with change notifications, allowing bound UI controls to refresh automatically when values are updated. The class acts as a lightweight wrapper for user display data, holding no validation or business logic of its own.
+The directory contains a single source file: `UserModel.cs`.
+
+*   **`UserModel`**: A partial class that inherits from `ObservableObject` (via the `CommunityToolkit.Mvvm` library). It exposes `FirstName` and `LastName` as observable properties, enabling automatic UI updates when values change.
 
 ### Relationships
 
-`UserModel` is the central data contract for the UserManagement module's UI layer. The `ShowUsersViewModel` creates and maintains a collection of [UserModel](UserManagement/Model/UserModel.md) instances, mapping data from the `UserService` to populate the user list. When a new user is added via `AddUserViewModel`, a `UserChangedMessage` is raised containing a new [UserModel](UserManagement/Model/UserModel.md), triggering the update in `ShowUsersViewModel`. The `DesignShowUsersViewModel` also uses this class to provide static data for the XAML designer. Additionally, the WinForms `UserForm` binds directly to these models to display user names.
+`UserModel` serves as the primary data carrier for the user interface in the UserManagement module. It does not contain business logic or persistence details; its sole purpose is to support WPF data binding.
+
+The dependency flow is unidirectional: ViewModels and Views consume `UserModel`.
+*   `ShowUsersViewModel` maintains an `ObservableCollection` of `UserModel` instances, populating it from `UserService` data.
+*   `AddUserViewModel` constructs `UserModel` instances after saving new users and sends them via `UserChangedMessage`.
+*   `UserChangedMessage` wraps a `UserModel` to propagate changes across the module.
+*   `UserForm` binds its list control to the collection of `UserModel` objects.
+
+Because `UserModel` lacks an `Id` property, the current implementation cannot distinguish between specific users when handling "Update" or "Delete" messages. This limits the module's ability to dynamically remove or modify individual items in the collection based on messages, as there is no key to match against.
 
 ```mermaid
-flowchart TD
-    subgraph "UserManagement/Model"
-        UM[UserModel]
-    end
+classDiagram
+    class ObservableObject {
+        <<External>>
+        +INotifyPropertyChanged
+    }
+    class UserModel {
+        +string FirstName
+        +string LastName
+    }
+    class ShowUsersViewModel {
+        +ObservableCollection~UserModel~ Users
+    }
+    class AddUserViewModel {
+        +SaveUser()
+    }
+    class UserChangedMessage {
+        +UserModel Value
+    }
+    class UserForm {
+        +ListBox lstUsers
+    }
 
-    subgraph "ViewModels"
-        SUV[ShowUsersViewModel]
-        AVM[AddUserViewModel]
-        DSV[DesignShowUsersViewModel]
-    end
-
-    subgraph "Messaging"
-        UCM[UserChangedMessage]
-    end
-
-    subgraph "View"
-        UF[UserForm]
-    end
-
-    SUV -->|creates & collects| UM
-    AVM -->|creates & sends| UM
-    DSV -->|creates for demo| UM
-    UM -->|contained in| UCM
-    UF -->|binds to| SUV
+    ObservableObject <|-- UserModel
+    ShowUsersViewModel --> UserModel : creates & manages collection
+    AddUserViewModel --> UserModel : instantiates on save
+    UserChangedMessage --> UserModel : wraps value
+    UserForm --> UserModel : binds to collection
 ```
-
-### Rough edges
-
-The [UserModel](UserManagement/Model/UserModel.md) lacks an `Id` property, relying solely on names to identify users. This prevents the UI from correctly handling "Updated" or "Deleted" messages in `ShowUsersViewModel`, as there is no unique key to locate the specific row in the collection.
 
 ## Contents
 - [UserModel.cs](UserManagement/Model/UserModel.md)

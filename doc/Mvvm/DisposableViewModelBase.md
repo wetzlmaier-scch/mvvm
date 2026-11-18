@@ -1,34 +1,33 @@
-# Mvvm/DisposableViewModelBase.cs
+# `Mvvm/DisposableViewModelBase.cs`
+
+`DisposableViewModelBase` is the abstract base class for ViewModels that own `IDisposable` resources and need them released deterministically when the ViewModel's lifetime ends.
 
 ### Purpose
 
-`DisposableViewModelBase` is the abstract base class for ViewModels that own `IDisposable` resources (timers, subscriptions, sockets, and similar) and need them released deterministically when the ViewModel goes away. It supplies the classic dispose pattern — a public `Dispose()`, a `Dispose(bool)` that derived classes can override, a `Disposables` collection, a `CheckIfDisposed()` guard, and a `Disposed` event.
+`ViewModelBase` (defined in `Mvvm/ViewModelBase.cs`) gives every ViewModel in this MVVM stack observable-property support (via Community Toolkit's `ObservableObject`) and child-ViewModel bookkeeping, but says nothing about resource lifetimes. `DisposableViewModelBase` fills that gap: it implements the standard .NET dispose pattern for the case where a ViewModel holds timers, subscriptions, sockets, or similar objects that must be explicitly released, so that owning the resource and cleaning it up come from one place instead of being hand-rolled in every such ViewModel.
+
+It also gives external code a stable type to dispose through: implementing `IDisposableViewModel` (defined in `Mvvm/IDisposableViewModel.cs`, simply `IViewModel, IDisposable`) means any code that holds the ViewModel as an interface reference can call `Dispose()` without knowing the concrete class.
 
 ### Role in the Codebase
 
-It sits in the `Mvvm` folder alongside the rest of the ViewModel base class family: `ViewModelBase`, `ValidatableViewModelBase<T>`, and `MainViewModelBase`. It is a mixin of the "lifecycle" concern into the inheritance chain, rather than a parallel hierarchy: a concrete ViewModel that needs disposal would derive from this class, gaining both `ViewModelBase` behaviour and disposal support.
-
-Currently no class in the repository derives from it (its only references are its own declaration and finalizer), so it appears to be infrastructure in place for future ViewModels. Its contract is also exposed through `IDisposableViewModel`, so views or other infrastructure can depend on that interface rather than the concrete class.
+It is a mid-level building block in the `Mvvm` library, one branch of the ViewModel base-class hierarchy rooted at `ViewModelBase` (its siblings are `MainViewModelBase`, which handles main-window close/shutdown, and `ValidatableViewModelBase<T>`, which adds validation). No class in the repository derives from it or references `Disposables` outside this file, so it is currently infrastructure in place for ViewModels that need disposal; the parallel hierarchy in the docs (`ViewModelBase <|-- DisposableViewModelBase`) treats it as the designated disposal branch.
 
 ### Relationships
 
-- Extends `ViewModelBase` (defined in `Mvvm/ViewModelBase.cs`), which itself extends CommunityToolkit.Mvvm's `ObservableObject` and implements `IViewModel`. Everything inherited from `ViewModelBase` — design-mode detection, child ViewModel registration, `OnClosing`/`OnClosed` — is available unchanged here.
-- Implements `IDisposableViewModel` (defined in `Mvvm/IDisposableViewModel.cs`), a marker interface that is simply `IViewModel, IDisposable`. That is what makes the `Dispose()` call here the interface implementation.
-- Callers would be concrete ViewModels deriving from this class, and any code holding an `IDisposableViewModel` reference and calling `Dispose()` on it.
+- Extends `ViewModelBase` (`Mvvm/ViewModelBase.cs`), which extends `ObservableObject` and implements `IViewModel`. All of that is inherited unchanged: `IsInDesignMode`, `OnClosing()`, `OnClosed()`, `RegisterChildViewModel`/`UnregisterChildViewModel`. Nothing here overrides any of it.
+- Implements `IDisposableViewModel` (`Mvvm/IDisposableViewModel.cs`), which contributes nothing new itself but makes `Dispose()` reachable through the interface.
+- Uses only BCL types (`Collection<T>`, `EventHandler`, `ObjectDisposedException`), no project imports.
 
 ### Behavior & Details
 
-- Registering resources: add any `IDisposable` to the `Disposables` collection (a protected, read-only `Collection<IDisposable>`). When disposal runs, every entry is disposed in collection order. The base class does not clear or deduplicate the collection; that is left to whoever adds entries.
-- Disposal sequence in `Dispose(bool)`:
-  1. No-op entirely if `IsDisposed` is already `true` — disposal is idempotent.
-  2. If `disposing` is `true` (explicit `Dispose()` call), dispose every item in `Disposables`. If `false` (finalizer path), managed disposables are deliberately left alone.
-  3. Set `IsDisposed = true`.
-  4. Raise `Disposed`.
-- `Dispose()` calls `Dispose(true)` then `GC.SuppressFinalize(this)`, so the finalizer won't run for explicitly disposed instances.
-- The finalizer calls `Dispose(false)`, covering only the unmanaged path — there is no actual unmanaged-resource hook in the base, so it exists purely so a future derived override has the full pattern to work with.
-- `CheckIfDisposed()` throws `ObjectDisposedException` (named after the concrete runtime type) if called after disposal. Derived classes are expected to call it at the top of methods that touch released resources; nothing in the base enforces that.
-- `IsDisposed` is public but has a private setter, so it can be observed from views but only changes via the dispose path. `[Browsable(false)]` hides it from design-time property grids.
+- **`Dispose()`** — the public, idempotent entry point. Forwards to `Dispose(true)` and calls `GC.SuppressFinalize(this)`, since the managed path already ran.
+- **`Dispose(bool disposing)`** — virtual, so a derived class can add its own cleanup in the standard override pattern. Guarded by `IsDisposed`, so calling it twice (e.g. via `Dispose()` plus the finalizer) has no effect. When `disposing` is true, every object in `Disposables` is disposed, in collection order. Then `IsDisposed` is set, and the `Disposed` event is raised — after the flag is set, so event handlers that inspect state see the ViewModel as already disposed. Note the unmanaged-resource cleanup section of the method is empty; only the `disposing == true` branch does anything today.
+- **`Disposables`** — a protected `ICollection<IDisposable>` that derived classes register resources into; it is the only mechanism this class provides for that. The class itself never adds to it.
+- **`IsDisposed`** — public, settable only privately. Marked `[Browsable(false)]` so it does not clutter XAML/property-grid design views, consistent with this being a WPF stack.
+- **`CheckIfDisposed()`** — protected helper; derived classes call it at the top of methods that touch releasable state to fail fast with `ObjectDisposedException`, named after the concrete runtime type via `GetType().Name`.
+- **Finalizer** — calls `Dispose(false)`, i.e. skips the managed `Disposables` loop. The comment notes this is the intended maintainability trade-off, not an oversight.
 
 ### Rough edges
 
-`Disposed` is raised after `IsDisposed` has already been set, so any handler that reacts to the event by calling back into the ViewModel will find `IsDisposed` already `true`, and handlers that run `CheckIfDisposed()` from within `Disposed` will throw.
+- The `Disposed` event is raised while `IsDisposed` is already `true`. A handler that reacts by calling back into the ViewModel (or into anything that calls `CheckIfDisposed()`) will throw — handlers must treat the event as a terminal notification only.
+- `Dispose()` is public and unsealed, so a derived class could redeclare or override it and bypass the idempotency and `SuppressFinalize` logic; the contract here only holds for the default implementation.

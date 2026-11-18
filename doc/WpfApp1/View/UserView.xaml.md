@@ -2,32 +2,27 @@
 
 ### Purpose
 
-This code-behind file is the C# half of the `UserView` window — the main "User Management" window of the WPF application. It does almost nothing on its own: it registers the window as an MEF export so the application's controller can find, show, and close it without ever naming the concrete type. The actual UI layout, bindings, and styling live in the paired `UserView.xaml` file.
+This file is the code-behind half of `UserView`, the main window of the WPF host project (`WpfApp1`). Its entire job is to make the window a MEF export: the `[Export(typeof(IMainView<bool?, double>))]` attribute registers `UserView` in the composition container so the module controller can import it. All actual UI lives in the paired `UserView.xaml`; the constructor just calls `InitializeComponent()`.
 
 ### Role in the Codebase
 
-`UserView` is the presentation entry point of the WPF app. The startup flow is:
+`WpfApp1` is one of several host projects in the repository (a WinForms sibling does the same with `UserForm`). In this project, `UserView` is the application's main window and the sole exporter of `IMainView<bool?, double>`. `DefaultModuleController` (`WpfApp1/Controller/DefaultModuleController.cs`) imports that contract; if this export were removed, MEF composition of the controller would fail and the app would not start.
 
-1. `App` (`WpfApp1/App.xaml.cs`, derived from `MvvmApplication`) boots MEF composition.
-2. `DefaultModuleController` (`WpfApp1/Controller/DefaultModuleController.cs`) is the exported `IModuleController`. Its importing constructor receives an `IMainView<bool?, double>` and an `IMainViewModel`; it assigns the view model to the view's `DataContext` and calls `MainView.Show()` in `Run()`.
-3. `UserView` is the only `IMainView<bool?, double>` export in the WPF project (the WinForms app has its own parallel `UserForm` implementing `IMainView<DialogResult, int>`), so this is the class MEF hands to the controller.
-
-If the `[Export]` attribute or the interface implementation were removed, MEF would fail to satisfy the controller's constructor and the application would not launch.
+The class is `partial` — the other half is generated from `UserView.xaml`, which declares the window's layout: a "Current Users" list bound to `ShowUsersViewModel.Users`, and an "Add New User" form bound to `AddUserViewModel`, plus a `Loaded` trigger that fires `ShowUsersViewModel.LoadedCommand`. Nothing here overrides or implements any of the interface members directly.
 
 ### Relationships
 
-- **`IMainView<bool?, double>`** (`Mvvm/IMainView.cs`): the contract this class implements. It inherits `IDialogView<bool?>` (`Mvvm/IDialogView.cs`) and `IView` (`Mvvm/IView.cs`). Concretely, `UserView` fulfils: `DataContext` (from `IView`, satisfied by `Window`), `Show()`/`Close()`/`Closing`/`Closed` (inherited from `Window`), `DialogResult` and `Left`/`Top`/`Width`/`Height` (satisfied by `Window` properties typed compatibly with `bool?` and `double`). Nothing here overrides any of that — it all comes for free from `Window`.
-- **`[Export]`** (`System.ComponentModel.Composition`): makes `UserView` discoverable to the MEF container used by the `Mvvm` framework.
-- **`UserView.xaml`**: the markup counterpart. The `x:Class="WpfApp1.View.UserView"` attribute in the XAML and the `partial` keyword here join them into one class; the XAML's data bindings (e.g. `ShowUsersViewModel.Users`, `AddUserViewModel.SaveUserCommand`, the `Loaded` event trigger that invokes `LoadedCommand`) are all resolved against whatever `DefaultModuleController` assigns as `DataContext` — the `IMainViewModel` export, `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`).
-
-The only caller in this repository is `DefaultModuleController`, which depends on the interface, not the class.
+- **`Window`** (WPF, `System.Windows`) — base class. This is where the members required by the interface come from: `Show()`, `Close()`, the `Closing`/`Closed` events, `DataContext` (from `IView`), and the `Left`/`Top`/`Width`/`Height` properties. Because `TDimension` is `double` and WPF exposes those properties as `double`, `Window` satisfies `IMainView<bool?, double>` without any code written in this file.
+- **`IMainView<TDialogResult, TDimension>`** — defined in `Mvvm/IMainView.cs`; extends `IDialogView<TDialogResult>` (`Mvvm/IDialogView.cs`), which extends `IView` (`Mvvm/IView.cs`). Note the dialog-result type is `bool?` rather than WinForms' `DialogResult`, and the dimension type is `double` rather than `int` — a WPF-appropriate pairing.
+- **`DefaultModuleController`** — the only consumer. Its `[ImportingConstructor]` receives `IMainView<bool?, double>` and `IMainViewModel`, sets `MainView.DataContext = mainViewModel` (so the `UserViewModel` from the `UserManagement` project drives the XAML bindings), then calls `MainView.Show()` in `Run()` and `MainView.Close()` in `Shutdown()`.
 
 ### Behavior & Details
 
-- The class is `partial`; the other part (generated from `UserView.xaml` at build time) contains the `InitializeComponent()` method that the constructor calls to wire up the visual tree. The constructor performs no other work.
-- The generic arguments encode how this app's dialog/position contract is typed: `bool?` for the dialog result, `double` for the view's position and size — matching WPF's `Nullable<bool> Window.DialogResult` and `double`-based `Left`/`Top`/`Width`/`Height`. The WinForms twin uses `DialogResult`/`int` instead, which is why the two apps need separate exports rather than sharing one.
-- Because no member is implemented in this file at all, behaviour changes almost never require touching it. Only the export type or the interface conformance would be reasons to edit it.
+The logic is minimal by design:
 
-### Rough edges
+- The class declares no methods, properties, or event handlers of its own.
+- `UserView()` calls `InitializeComponent()`, which instantiates the window from the XAML markup.
+- All interface members are supplied by the inherited `Window` implementation, so no member requires an override here.
+- The export attribute is what couples the class into the application; without it the window would exist but never be composed or shown.
 
-- `IMainView<TDialogResult, TDimension>` is a weakly typed contract: the "dimension" parameters (`Left`, `Top`, `Width`, `Height`) are all the same type, and the dialog result is an unconstrained generic. This forces each host app to pick an arbitrary type pairing (`bool?`/`double` here, `DialogResult`/`int` in WinForms), which is why the exports cannot be shared across the two projects.
+One caveat worth knowing: `UserView` does not set `DialogResult` and no caller reads it. The `bool?` type parameter is part of the MEF contract's identity (it must match what `DefaultModuleController` imports) but carries no actual dialog-result semantics in the WPF host.

@@ -1,33 +1,38 @@
 # `BusinessLayer/BusinessLayerException.cs`
 
-This file defines `BusinessLayerException`, the single exception type used by the `BusinessLayer` project to signal that a business operation failed.
-
 ### Purpose
 
-The class exists so business-logic failures are distinguishable from other kinds of errors. It inherits from the .NET `System.Exception` (a framework type, not defined in this repository), and its only addition is its *identity*: catching it tells a caller that the failure originated in the business layer and wrapped an underlying cause, rather than being a validation error, infrastructure fault, or framework exception.
+This file defines `BusinessLayerException`, a single `Exception` subclass that serves as the `BusinessLayer` project's marker type for "a business operation failed." It exists so that callers outside the layer can distinguish business-layer faults from framework, validation, or data-access errors by catching a specific type instead of a bare `Exception`.
+
+The class has no fields, properties, or logic of its own — it adds nothing to `System.Exception` beyond its identity as a type. All the value of the file is in its name.
 
 ### Role in the Codebase
 
-`BusinessLayerException` is the error contract of the `BusinessLayer` project (`BusinessLayer/BusinessLayerException.cs`). Its main producer is `BusinessLayer/UserService.cs`: when `UserService.AddUser` fails while saving a user, the method rolls back the transaction, logs the original error, and rethrows it wrapped in a `BusinessLayerException` — the code comment there ("only throw a BusinessException") marks this as an intentional rule for that service.
+It is the error contract of the `BusinessLayer` project. The code in `BusinessLayer/UserService.cs` carries a comment making this explicit: in `AddUser`, any exception from the save path is logged and rethrown as `throw new BusinessLayerException("Error saving user", e)`, so business failures leave the service wrapped in this one type.
 
-Downstream, `UserManagement/ViewModel/AddUserViewModel.cs` catches `BusinessLayerException` explicitly in its save command. Note, however, that that catch block currently just does `throw;` — it rethrows unchanged, so today it distinguishes nothing yet; it is a placeholder for handling the business-layer failure separately from other exceptions. `TestProject1/UserViewModelTest.cs` constructs the exception directly (`new BusinessLayerException("Database connection failed", new Exception())`) and asserts that `SaveUserCommand` throws exactly this type, so the type is also part of the tested behaviour contract.
+If it were removed, `UserService` would have nothing to wrap faults in, and the catch and tests below would have no type to target.
 
-Removing this class would break `UserService`, `AddUserViewModel`, and the test project compilation, and more importantly remove the marker that lets callers tell business failures apart from other exceptions.
+### Relationships
+
+- **Producer:** `BusinessLayer/UserService.cs` — the only place in production code that throws it. `AddUser`'s `catch (Exception e)` block constructs it with the message `"Error saving user"` and the original fault as the inner exception, after rolling back the transaction and logging via `LoggingService`.
+- **Consumer:** `UserManagement/ViewModel/AddUserViewModel.cs` — `SaveUserAsync` catches `BusinessLayerException` explicitly and rethrows it (`throw;`), so business failures propagate to the command's caller.
+- **Tests:** `TestProject1/UserViewModelTest.cs` — `SaveUserAsync_WhenServiceThrows_RethrowsExceptionAndDoesNotAddUser` constructs one with a fake inner `Exception`, stubs `IUserService.AddUser` to throw it, and asserts `Assert.ThrowsExactlyAsync<BusinessLayerException>` — note the *exactly*, so the type must not be silently widened to a derived or different exception.
+
+It itself depends on nothing but `System.Exception` (framework type).
 
 ### Behavior & Details
 
-The class has exactly one constructor:
+One constructor, and it is the only door in:
 
 ```csharp
 public BusinessLayerException(string message, Exception inner) : base(message, inner)
 ```
 
-- It requires **both** a message and an inner exception. There is no parameterless or message-only constructor, so every `BusinessLayerException` carries the original fault as `InnerException`. Code that wants to throw it with no cause (as the test does) must explicitly pass one, e.g. `new Exception()`.
-- The constructor does nothing but forward both arguments to the `Exception` base constructor. No state is added; there is nothing to serialize or configure beyond the standard exception members.
-
-Because the only constructor demands an `inner`, this exception is exclusively a *wrapper*: it is meant to be thrown around a caught exception, never on its own.
+- Both arguments are required. There is no parameterless or message-only constructor, so every instance is guaranteed to carry the original fault in `InnerException`. Code that wants to raise one for a non-wrapped reason still has to pass some inner `Exception` (the test does exactly this with `new Exception()`).
+- `message` and `inner` are passed straight through to `Exception`'s `(message, inner)` constructor. Nothing is modified, enriched, or validated beyond what `Exception` does (e.g. `Exception` tolerates a `null` inner exception).
+- No `SerializationInfo`-based deserialization constructor, so a serialized instance of this type cannot be deserialized. Irrelevant in practice here since nothing serializes this exception, but it is missing relative to the conventional three-constructor shape for custom `Exception` subclasses.
 
 ### Rough edges
 
-- `AddUserViewModel` catches `BusinessLayerException` and rethrows it with no additional handling, so the dedicated catch currently has no observable effect and the type's purpose of separating business failures is only realized at the `UserService` boundary.
-- The class omits a `SerializationInfo`-based (deserialization) constructor, which is the conventional third constructor on a custom `Exception` subclass; `BusinessLayerException` therefore cannot be recreated by the serializer after crossing an AppDomain/assembly boundary.
+- `AddUserViewModel` catches `BusinessLayerException` only to `throw;` with no other handling, so the dedicated catch currently has no observable effect — the type's separating purpose is asserted by the test rather than acted on by the UI layer.
+- `UserService.AddUser`'s `Guard` validation calls throw plain `ArgumentException` before the try block, so validation failures bypass the "only throw a BusinessLayerException" intent stated in the code; callers catching this type will not see bad-input failures.

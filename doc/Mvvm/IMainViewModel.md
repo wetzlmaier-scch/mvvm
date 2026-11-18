@@ -1,28 +1,29 @@
-# Mvvm/IMainViewModel.cs
-
 ### Purpose
 
-`IMainViewModel` is the contract for the main window's view model. It marks a view model as the one bound to the application's main window, and — beyond ordinary view-model behaviour — gives controllers the ability to close that window or shut the whole application down with an exit code. It exists so that host-specific code (module controllers in the WPF and WinForms host apps) can drive the application's lifecycle through an interface rather than a concrete view model class.
+`Mvvm/IMainViewModel.cs` defines `IMainViewModel`, the contract for the view model bound to the application's main window. Ordinary view models only expose data; this interface marks a view model as the main window's and adds the window-level operations the host can perform against it: reading the window icon, closing the window, and shutting the whole application down with an exit code.
+
+The interface itself contains no logic. Its value is as a lookup key and a capability marker: code that wants to drive the main window depends on this contract rather than on any concrete view model.
 
 ### Role in the Codebase
 
-This interface is a small piece of the shared `Mvvm` namespace — the cross-platform view-model layer consumed by both host applications. It defines the role, not the behaviour: the only implementation is `MainViewModelBase` (in `Mvvm/MainViewModelBase.cs`), an abstract class that app-specific main view models derive from. Removing it would break every module controller in the host apps, which all depend on this type (see below).
+It is one of the shared abstractions in the `Mvvm` project (alongside `IViewModel`, `IMessageService`, `ViewModelBase`, etc.), a small framework layer that the concrete host projects (`WpfApp1`, `WinFormsApp1`) and feature projects (`UserManagement`) build on. Because the interface names no specific host, the same contract works under both WPF and WinForms hosts.
+
+If it were removed, `MainViewModelBase` (`Mvvm/MainViewModelBase.cs`) would have nothing to implement, and the `DefaultModuleController` classes in both host projects would have no type to import for the main view model.
 
 ### Relationships
 
-- **Extends `IViewModel`** (defined in `Mvvm/IViewModel.cs`). `IViewModel` itself extends `INotifyPropertyChanged` and declares no members, so inheriting it simply marks this type as a change-notifying view model. `IMainViewModel` adds the window-lifecycle surface on top.
-- **Implemented by `MainViewModelBase`** (`Mvvm/MainViewModelBase.cs`), which itself extends `ViewModelBase` (in `Mvvm/ViewModelBase.cs`). The interface is the point through which consumers see those implementations.
-- **Consumed by the module controllers** in the host applications, which are composed via MEF:
-  - `WinFormsApp1/Controller/DefaultModuleController.cs` receives `IMainViewModel` through its `[ImportingConstructor]`, stores it in `MainViewModel`, and assigns it as `MainView.DataContext`.
-  - `WpfApp1/Controller/DefaultModuleController.cs` does the same.
-  - App-specific view models advertise themselves as implementations with `[Export(typeof(IMainViewModel))]` (e.g. `UserManagement/ViewModel/UserViewModel.cs`), which is what the MEF composition matches against.
+- **Extends `IViewModel`** (`Mvvm/IViewModel.cs`). `IViewModel` itself extends `INotifyPropertyChanged` and declares no members, so inheriting it simply marks a type as a change-notifying view model; everything here (`Icon`, `CloseWindow`, `Shutdown`) is new.
+- **Implemented via `MainViewModelBase`** (`Mvvm/MainViewModelBase.cs`), an abstract class that provides the default implementations of all three members. App-specific view models inherit from `MainViewModelBase` rather than implementing the interface directly.
+- **Resolved through MEF.** A view model advertises itself as the main one with `[Export(typeof(IMainViewModel))]` — e.g. `UserManagement/ViewModel/UserViewModel.cs` does this in addition to its `IUserViewModel` export. The host's `DefaultModuleController` (`WpfApp1/Controller/DefaultModuleController.cs` and `WinFormsApp1/Controller/DefaultModuleController.cs`) receives an `IMainViewModel` through its `[ImportingConstructor]` and sets it as the view's data context. The WPF controller also calls `Shutdown()` when the main window closes.
 
 ### Behavior & Details
 
-The interface declares one property and two methods:
+Three members, each describing a window-level operation:
 
-- `ImageSource? Icon` — the window icon as WPF imaging. `MainViewModelBase` fills it in from the application's executable icon (via `AssemblyHelper.LoadApplicationIcon` and `BitmapSourceHelper.LoadBitmap`); it stays `null` if no icon loads, hence the nullable type.
-- `CloseWindow()` — closes the main window. In `MainViewModelBase` this calls `Application.Current?.MainWindow?.Close()` and is a no-op in design mode. Note this goes through the window's `Closing` event, so a view model can still cancel the close (the base class routes it through `OnClosing`).
-- `Shutdown(int exitCode)` — shuts down the whole application, propagating `exitCode`. In `MainViewModelBase` this calls `Application.Current?.Shutdown(exitCode)`.
+- **`ImageSource? Icon { get; }`** — the icon to display on the main window. Nullable by design: `MainViewModelBase` populates it from the executing assembly's icon, but only if loading succeeds, so a missing icon leaves it `null`.
+- **`CloseWindow()`** — closes the application's main window. In the base implementation this is `Application.Current?.MainWindow?.Close()`; because closing the main window tears down the WPF application, this is effectively "quit the UI". It returns without doing anything in design mode or if no application context exists.
+- **`Shutdown(int exitCode)`** — shuts down the whole application, passing `exitCode` to `Application.Current?.Shutdown(exitCode)` so the process exits with the caller's code. Like `CloseWindow`, it is a no-op in design mode.
 
-One caveat for anyone relying on this contract: both methods depend on `Application.Current` at call time (WPF's `Application`, specifically). The interface does not say how the current `Application` is reached, and the base implementation's behaviour — and its no-op in design mode — is an implementation detail callers shouldn't need to know but do in practice.
+The concrete behaviour of all three members lives in `MainViewModelBase`, which hooks the main window's `Closing` event in its constructor to give view models a chance to cancel close (via `OnClosing`) and to run `OnClosed()` after. A change to how these members should behave belongs in `MainViewModelBase`, not in this interface.
+
+One caveat: a host is not obliged to call these members. The WinForms `DefaultModuleController`, for instance, imports `IMainViewModel` but never invokes `CloseWindow()` or `Shutdown()`, so their contract is only exercised where a host actually uses them.

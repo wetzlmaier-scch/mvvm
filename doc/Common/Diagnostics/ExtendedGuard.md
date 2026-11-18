@@ -2,30 +2,27 @@
 
 ### Purpose
 
-`ExtendedGuard` is a small static helper that asserts a collection does or does not contain a given item, throwing an `ArgumentException` when the assertion fails. It complements the preconditions in the third-party `CommunityToolkit.Diagnostics.Guard` class, which handles null/whitespace checks but offers no collection-containment checks.
+`ExtendedGuard` is a small static helper for argument preconditions: it asserts that a collection does or does not contain a given item, and throws `ArgumentException` when the assertion fails. It fills a gap in the third-party guard library already used by this codebase (CommutityToolkit.Mvvm's `Guard`, which validates nulls and such but not collection membership). The two methods exist so that add/remove operations can fail loudly instead of silently producing duplicates or no-ops.
 
 ### Role in the Codebase
 
-It sits under `Common/Diagnostics`, the project's shared guard/argument-checking helpers, and is consumed from the Mvvm layer. It has no other dependencies. Removing it would break the child-ViewModel bookkeeping in `ViewModelBase` (below), which relies on it to detect double-registration and unregistration of unregistered view models.
+It is the sole file in `Common/Diagnostics/` and a leaf utility in the `Common` project: it has no dependencies on other project code, only on `System.Collections.Generic`. Nothing depends on it at compile time except its one current consumer, `Mvvm/ViewModelBase.cs`; the class would be dead code if that call site were removed, but nothing else in `Common` references it.
 
 ### Relationships
 
-The only in-repo caller is `Mvvm/ViewModelBase.cs`:
+- `Mvvm/ViewModelBase.cs` is the only caller in the repository:
+  - `ViewModelBase.RegisterChildViewModel` calls `ExtendedGuard.NotContains(_childViewModels, viewModel, nameof(viewModel))` before adding a child view model, so registering the same child twice throws.
+  - `ViewModelBase.UnregisterChildViewModel` calls `ExtendedGuard.Contains(_childViewModels, viewModel, nameof(viewModel))` before removing one, so unregistering a view model that was never registered throws.
 
-- `ViewModelBase.RegisterChildViewModel` calls `ExtendedGuard.NotContains(_childViewModels, viewModel, nameof(viewModel))` before adding a child, so a view model cannot be registered twice.
-- `ViewModelBase.UnregisterChildViewModel` calls `ExtendedGuard.Contains(...)` before removing a child, so you cannot unregister a view model that was never registered.
-
-Both call sites combine it with `Guard.IsNotNull(viewModel)` from CommunityToolkit.Diagnostics.
+Note that `ViewModelBase` also uses the standard `Guard` class (from the MVVM toolkit) for null checks; `ExtendedGuard` supplements it rather than replacing it.
 
 ### Behavior & Details
 
-Two methods, both on the static class:
+Two generic methods, both taking `ICollection<T> collection`, the item to test, and a `string name` intended to identify the argument in error messages:
 
-- `Contains<T>(ICollection<T> collection, T item, string name)` — throws `ArgumentException` if `collection` does not contain `item`.
-- `NotContains<T>(ICollection<T> collection, T item, string name)` — throws `ArgumentException` if it does.
+- `Contains<T>(collection, item, name)` — throws `ArgumentException` if the item is **not** in the collection.
+- `NotContains<T>(collection, item, name)` — throws `ArgumentException` if the item **is** in the collection.
 
-The `name` parameter is meant to identify the offending item in the error message for the caller's convenience. Both containment checks use `ICollection<T>.Contains`, so equality is whatever the item type's `Equals` does (for view models, reference equality by default).
+Membership is delegated to `ICollection<T>.Contains`, so behaviour matches the collection's own equality semantics (reference equality for `ViewModelBase` instances, unless a type overrides `Equals`).
 
-### Rough edges
-
-The thrown messages hard-code a literal `'{name}'` instead of interpolating the `name` argument (e.g. `"... does not contain '{name}'"`), so the parameter is accepted but never actually appears in the exception message. As written, the message gives no hint about which collection or item failed.
+Rough edge: the `name` parameter is never used. Both exception messages hard-code the literal text `"'{name}'"` (e.g. `"Collection already contains '{name}'"`), so the thrown message is identical regardless of what `ViewModelBase` passes. The placeholder was likely meant to be interpolated as `$"..." {name} ..."` — as written, the message does not identify which argument failed, and the parameter is dead weight.

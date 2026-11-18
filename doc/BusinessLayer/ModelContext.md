@@ -1,32 +1,38 @@
-# BusinessLayer/ModelContext.cs
+# `BusinessLayer/ModelContext.cs`
 
 ### Purpose
 
-`ModelContext` is the MEF export that supplies the application's database connection settings: the connection string and the list of assembly names that contain ORM mapping files. It exists because the business layer needs a concrete, discoverable `IModelContext` that consumers can import without knowing where the configuration comes from.
-
-The whole class is a single parameterless constructor — the type has no members of its own.
+`ModelContext` is the concrete, MEF-exported `IModelContext` for this application. It exists to hand the NHibernate data-access layer the two configuration values it needs — the database connection string and the names of the assemblies that contain Fluent NHibernate mappings. All of the actual configuration storage is inherited; this class only supplies the values and makes itself discoverable.
 
 ### Role in the Codebase
 
-It is a small DI/MEF composition piece inside `BusinessLayer`. The `DataAccessLayer.Hibernate` project defines the contract (`IModelContext`), the abstract base (`ModelContextBase`), and the ORM machinery; this file is the concrete binding for this application, filling in the actual connection string and mapping assembly.
+It is a wiring piece at the edge of `BusinessLayer`, not business logic. `BusinessLayer` is the layer that composes the application's MEF graph (its `RepositoryFactory` and `UserService` are also `[Export]`ed), and `ModelContext` is the part of that graph where configuration enters from the host process. It has no behaviour of its own: if it were removed, nothing in `BusinessLayer` would stop compiling, but `RepositoryFactory`'s `[ImportingConstructor]` would no longer be satisfiable and the container would fail to build a repository factory at startup.
 
 ### Relationships
 
-- **Base class:** `ModelContextBase` in `DataAccessLayer.Hibernate/ModelContextBase.cs`. That abstract class stores `ConnectionString` and `MappingAssemblies` as read-only properties, so this class inherits both.
-- **Exported contract:** `IModelContext` (defined in `DataAccessLayer.Hibernate/IModelContext.cs`). The `[Export(typeof(IModelContext))]` attribute makes MEF provide this class to any part that imports `IModelContext`.
-- **Caller:** `RepositoryFactory` in `BusinessLayer/RepositoryFactory.cs` imports `IModelContext` in its `[ImportingConstructor]` and passes `context.ConnectionString` and `context.MappingAssemblies` on to its `HibernateRepositoryFactory<int>` base. That is the only current consumer found in the codebase.
-- **Configuration:** The connection string is read from `ConfigurationManager.AppSettings["ConnectionString"]`, so the value is whatever `app.config`/`web.config` supplies under that key.
+- **Base class:** `ModelContextBase` in `DataAccessLayer.Hibernate/ModelContextBase.cs`, an abstract class in the data-access project that implements `IModelContext`. It stores the constructor arguments in the read-only `ConnectionString` and `MappingAssemblies` properties. `ModelContext` inherits both properties and overrides nothing.
+- **Exported contract:** `IModelContext` in `DataAccessLayer.Hibernate/IModelContext.cs`, a two-property interface (`ConnectionString`, `MappingAssemblies`). The `[Export(typeof(IModelContext))]` attribute (from `System.ComponentModel.Composition`, .NET's MEF) is what ties this class to that contract.
+- **Consumer:** `RepositoryFactory` in `BusinessLayer/RepositoryFactory.cs` declares `[ImportingConstructor] public RepositoryFactory(IModelContext context)` and forwards `context.ConnectionString` and `context.MappingAssemblies` to its base `HibernateRepositoryFactory<int>`, which builds the NHibernate session factory.
+- **Composition host:** the hosts (`WinFormsApp1/Program.cs`, `WpfApp1`, `ConsoleApp1/Program.cs`) build a `CompositionContainer` via `CompositionHelper` in `Common/Composition/CompositionHelper.cs`, which is where this export gets discovered and matched to the import.
 
 ### Behavior & Details
 
-The single parameterless constructor does two things:
+The class uses a C# 12 primary constructor — the parentheses after the type name are empty because every value comes from the base-constructor invocation:
 
-- Reads `AppSettings["ConnectionString"]` and passes it (with the `!` null-forgiving operator) as the `connectionString` argument to `ModelContextBase`. If the setting is missing, the constructor receives `null`; nothing here validates it, so a misconfigured app will fail later, when a connection is actually attempted.
-- Passes `["Entity.Hibernate"]` as the `mappingAssemblies` argument, telling the Hibernate ORM that entity mapping files live in the `Entity.Hibernate` assembly. Note that `ModelContextBase`'s own commented-out line adds `"DataAccessLayer"` and `"DataAccessLayer.Hibernate"` to this list in some deployments — the base class keeps its list as passed, so this export maps only `Entity.Hibernate`.
+```csharp
+public class ModelContext()
+    : ModelContextBase(ConfigurationManager.AppSettings["ConnectionString"]!, ["Entity.Hibernate"]);
+```
 
-Because the constructor takes no parameters, MEF can compose it unconditionally; all its configuration comes from `AppSettings` at construction time. Changing the connection string or mapping assemblies is done entirely through configuration and this one call, respectively — no code change in the data-access layer is needed.
+Two values flow into `ModelContextBase` at construction:
+
+- **Connection string** comes from `ConfigurationManager.AppSettings["ConnectionString"]` — the `appSettings` entry in the host's `App.config` (each host carries one, e.g. `WinFormsApp1/App.config` points at a local `Users` database). The null-forgiving operator `!` asserts the setting exists; there is no fallback or error if the key is missing.
+- **Mapping assemblies** is the hard-coded literal `["Entity.Hibernate"]`, the project that holds the `User` entity and its Fluent NHibernate mapping. At session-factory build time, `HibernateRepositoryFactory` loads each name via `Assembly.Load`, so the entry must be the assembly name, not a path. Note that `ModelContextBase`'s constructor has a commented-out append of `"DataAccessLayer", "DataAccessLayer.Hibernate"` to this list; those assemblies are therefore *not* scanned for mappings as the code stands.
+
+Because it has no members, there is no other state, control flow, or failure mode here — construction either supplies the two values or throws if the app setting is absent.
 
 ### Rough edges
 
-- `ConfigurationManager.AppSettings["ConnectionString"]!` asserts non-null without checking; a missing app setting is a silent `null` until the connection string is used.
-- The `["Entity.Hibernate"]` literal hard-codes the mapping assembly for this app; adding a mapping assembly requires editing this file rather than the configuration.
+- The connection string is read unconditionally in the primary constructor with no guard, so constructing a `ModelContext` in a context without a host `App.config` (e.g. a unit test) throws a `NullReferenceException` rather than a meaningful configuration error.
+- The mapping assembly list is hard-coded to `["Entity.Hibernate"]`, so adding a new entity/mapping assembly requires a code change here rather than a configuration change.
+- The class's parameterless primary constructor `ModelContext()` is never used by anything; the only real construction path is the MEF import satisfied by `RepositoryFactory`.

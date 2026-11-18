@@ -1,29 +1,37 @@
-# BusinessLayer/IRepositoryFactory.cs
+# `BusinessLayer/IRepositoryFactory.cs`
 
 ### Purpose
 
-This file defines `IRepositoryFactory`, the BusinessLayer's own, key-free contract for creating NHibernate repositories. It exists so that business services (like `UserService`) can depend on a factory abstraction without knowing that repositories are backed by NHibernate/Hibernate, or that the repository key type is `int`.
+This file defines `IRepositoryFactory`, the business layer's own, non-generic contract for creating NHibernate repositories. It exists so that business services can depend on a factory type with the key type already closed to `int` — the application's actual entity key type — instead of carrying the generic parameter of the data-access layer through every business method.
+
+It is an empty marker interface: it adds no members of its own. Its entire job is inheritance, which pulls the generic contract in and pins it down.
 
 ### Role in the Codebase
 
-It is a small type alias / specialization interface inside the `BusinessLayer` namespace. It derives from `IHibernateRepositoryFactory<int>` (defined in `DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs`), which itself derives from the generic `DataAccessLayer.IRepositoryFactory<IHibernateRepository<TKey>, TKey>` and adds `Create()` returning `IHibernateRepository<TKey>`.
+It is a small contract file inside `BusinessLayer/`, alongside `RepositoryFactory` (the MEF-exported implementation) and the business services that consume it. It forms the seam between the business layer and the NHibernate-based data access: services program against this interface, never against the `DataAccessLayer` or `DataAccessLayer.Hibernate` types directly.
 
-By fixing `TKey` to `int` and dropping the generic parameter, this interface gives the business layer a stable, non-generic seam for repository creation. If it were removed, `UserService` and `RepositoryFactory` would need to reference the generic `IHibernateRepositoryFactory<int>` directly, leaking the key type and the DataAccessLayer's Hibernate-specific naming into the business layer.
+If it were removed, `UserService` and `RepositoryFactory` would have no business-layer type to compile against, and services would be forced to depend on the generic `IHibernateRepositoryFactory<int>` from `DataAccessLayer.Hibernate` instead.
 
 ### Relationships
 
-- **Extends** `IHibernateRepositoryFactory<int>` (from `DataAccessLayer.Hibernate`), which inherits from `DataAccessLayer.IRepositoryFactory<IHibernateRepository<TKey>, TKey>`. So members inherited through the chain include:
-  - `IHibernateRepository<int> Create()` — from `IHibernateRepositoryFactory<TKey>`.
-  - `void Drop()` — from the generic base `IRepositoryFactory<TRepository, TKey>`.
-- **Implemented by** `RepositoryFactory` (same folder, `BusinessLayer/RepositoryFactory.cs`), which also extends `HibernateRepositoryFactory<int>` and is MEF-exported as `IRepositoryFactory`.
-- **Consumed by** `UserService` (`BusinessLayer/UserService.cs`), which takes `IRepositoryFactory` in its `[ImportingConstructor]` and calls `_repositoryFactory.Create()` to open repositories for queries and unit-of-work transactions.
+- **Extends** `IHibernateRepositoryFactory<TKey>` (defined in `DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs`), with `TKey` closed to `int`.
+- Through that base it inherits from `DataAccessLayer.IRepositoryFactory<TRepository, TKey>` (defined in `DataAccessLayer/IRepositoryFactory.cs`).
+- The members a consumer of this interface sees are therefore:
+  - `IHibernateRepository<int> Create()` — declared by `IHibernateRepositoryFactory<TKey>`, which hides the base `Create()`; calling it through this interface returns the NHibernate-specific repository, which extends `IRepository<TKey>` and adds `Save<TEntity>(TEntity)` and `UnitOfWork`.
+  - `void Drop()` — from the base `DataAccessLayer.IRepositoryFactory<TRepository, TKey>`.
+- **Implemented by** `RepositoryFactory` (`BusinessLayer/RepositoryFactory.cs`), which extends `HibernateRepositoryFactory<int>` and is MEF-exported as `[Export(typeof(IRepositoryFactory))]`.
+- **Consumed by** `UserService` (`BusinessLayer/UserService.cs`), which takes `IRepositoryFactory` in its `[ImportingConstructor]` and calls `_repositoryFactory.Create()` inside a `using` block for each operation.
 
 ### Behavior & Details
 
-The interface declares no new members of its own; it contributes only the type-level specialization (fixing `TKey` to `int`) and a non-generic name that business-layer code can reference. All contract behavior comes from the inherited members:
+Because the interface is empty, its behaviour is entirely that of its generic base chain. Two things are worth knowing for a caller:
 
-- `Create()` returns a new `IHibernateRepository<int>` (in practice a `HibernateRepository<int>` over a stateless session, per `HibernateRepositoryFactory.Create`). Callers treat it as disposable (`using var repository = _repositoryFactory.Create();`).
-- `Drop()` is declared in the generic base but is never implemented meaningfully — `HibernateRepositoryFactory.Drop()` throws `NotImplementedException`, so callers in the business layer don't use it.
-- Because `TKey` is constrained to `struct` in the base interfaces, `int` satisfies the constraint; that's why the specialization uses `int` (matching the integer primary keys of the entities, e.g. `User`).
+- Calling `Create()` through this interface yields `IHibernateRepository<int>`, so callers get the NHibernate-specific members (`Save`, `UnitOfWork`) for free without referring to the `DataAccessLayer.Hibernate` namespace.
+- `IHibernateRepository<TKey>` extends `IDisposable`, which is why `UserService` wraps every `Create()` call in a `using` block.
+- `TKey` is constrained to `struct` up the chain, which is why `int` (and any other struct) is a valid closing; the application standardises on `int`.
+- `Drop()` is inherited from `DataAccessLayer.IRepositoryFactory<TRepository, TKey>`. No caller in the business layer uses it, and the concrete `HibernateRepositoryFactory` provides no working shutdown logic for it, so treat it as effectively vestigial in this layer.
 
-One practical caveat for anyone implementing this: the underlying `HibernateRepositoryFactory` constructor enforces a process-wide single initialization (a static `IsInitialized` flag), so only one factory/session factory can be created per process.
+### Rough edges
+
+- The name `IRepositoryFactory` shadows `DataAccessLayer.IRepositoryFactory<TRepository, TKey>` in files that import both namespaces; code in this project resolves it by namespace qualification or by not importing `DataAccessLayer` at all.
+- `Drop()` exists in the contract but has no working implementation in the concrete layers, so it cannot be relied on for shutdown logic.

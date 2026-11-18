@@ -1,40 +1,31 @@
 ### Purpose
 
-`WpfApp1/Controller` contains the application's bootstrapping controller, `DefaultModuleController`. This class acts as the entry point for the WPF application's lifecycle, handling the initialization, display, and teardown of the main window. It exists to satisfy the `IModuleController` interface required by the MEF (Managed Extensibility Framework) composition container used by the host application.
+The `WpfApp1/Controller` directory contains the application's module lifecycle controller. It serves as the entry point for the WPF host's MEF composition process, ensuring the main window is initialized and displayed. Its sole content, `DefaultModuleController.cs`, belongs here because it implements the `IModuleController` contract required by the `MvvmApplication` base class to manage startup, execution, and shutdown.
 
 ### Software Components
 
-The directory contains a single source file: `DefaultModuleController.cs`.
-
-*   **`DefaultModuleController`**: Implements `IModuleController` and serves as the concrete module export for the WPF assembly. It manages the lifecycle of the main UI by wiring the view (`IMainView`) to its view model (`IMainViewModel`) and controlling their visibility. As the only `IModuleController` export in this assembly, it defines the app's entire startup and shutdown sequence.
+The primary component in this directory is [DefaultModuleController](WpfApp1/Controller/DefaultModuleController.md), located in `DefaultModuleController.cs`. This class acts as a thin wrapper around the application's main view and view model. It receives `IMainView<bool?, double>` and `IMainViewModel` via MEF injection in its constructor, binds the view model to the view's `DataContext`, and maps the standard lifecycle callbacks to window operations. Specifically, `Run()` triggers `MainView.Show()`, and `Shutdown()` triggers `MainView.Close()`. The class is marked with `[Export(typeof(IModuleController))]`, making it the only module export in the `WpfApp1` project that the host application discovers and executes.
 
 ### Relationships
 
-The controller sits at the intersection of the UI layer and the dependency injection container. `MvvmApplication` (the host) discovers this controller via MEF composition, injecting the main view and view model into its constructor.
-
-*   **Dependency Injection**: The MEF container injects `UserView` (as `IMainView<bool?, double>`) and `UserViewModel` (as `IMainViewModel`) into `DefaultModuleController`.
-*   **Lifecycle Management**: `MvvmApplication` calls `Initialize()`, `Run()`, and `Shutdown()` on this controller. `Run()` displays the window, while `Shutdown()` closes it.
-*   **View-Model Binding**: The constructor binds the injected view model to the view's `DataContext`, establishing the MVVM connection before the window is shown.
+`DefaultModuleController` depends on the `IModuleController` interface from the `Mvvm` assembly to define its lifecycle contract. It relies on MEF for dependency injection, receiving the main view and view model through its `[ImportingConstructor]`. The caller is `MvvmApplication` (in `WpfApp1/App.xaml.cs`), which resolves `DefaultModuleController` from the composition container without referencing the class by name. During startup, `MvvmApplication` calls `Initialize()` (which is empty here), then `Run()` to show the window. During exit, it calls `Shutdown()` to close the window.
 
 ```mermaid
 flowchart TD
     subgraph "WpfApp1/Controller"
-        DMC["DefaultModuleController"]
+        DMC["DefaultModuleController<br/>(DefaultModuleController.cs)"]
+    end
+    
+    subgraph "Mvvm"
+        IModCtrl["IModuleController"]
+    end
+    
+    subgraph "WpfApp1 (Host)"
+        MvvmApp["MvvmApplication<br/>(App.xaml.cs)"]
     end
 
-    subgraph "Host Application"
-        MvmApp["MvvmApplication"]
-    end
-
-    subgraph "UI & Logic Layers"
-        UV["UserView<br/>(IMainView)"]
-        UVM["UserViewModel<br/>(IMainViewModel)"]
-    end
-
-    MvmApp -->|Discovers & Drives| DMC
-    DMC -->|Injects| UV
-    DMC -->|Injects| UVM
-    UV -->|Bound to| UVM
+    MvvmApp -->|Resolves & Calls| DMC
+    DMC -->|Implements| IModCtrl
 ```
 
 ## Contents

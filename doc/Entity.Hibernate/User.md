@@ -1,25 +1,33 @@
+# `Entity.Hibernate/User.cs`
+
 ### Purpose
 
-`Entity.Hibernate/User.cs` defines the `User` domain entity — the NHibernate-mapped representation of an application user with a first name, last name, and active flag. It exists so that `BusinessLayer/UserService.cs` can create and persist users, and queries can retrieve them, with the mapping to the database handled by the separate `UserMapping.cs` in the same folder.
+This class is the NHibernate-annotated domain model for a user: it exists to be persisted to the `Users` table by NHibernate. It carries the name and an `IsActive` flag, and it always marks a newly created user as active. It is the storage-side counterpart of `UserDto` — the transport/DTO type used across the business and UI layers.
 
 ### Role in the Codebase
 
-This class is the persistent domain model for the small user-management part of the app. It lives in the `Entity.Hibernate` project, which is referenced by `BusinessLayer` (see `BusinessLayer/BusinessLayer.csproj`), and `BusinessLayer/ModelContext.cs` tells NHibernate to discover mappings from that assembly so `UserMapping` is picked up. `UserManagement/ViewModel/ShowUsersViewModel.cs` imports the `Entity.Hibernate` namespace as well, though it works mainly through DTOs rather than the entity itself. Removing `User` would break `UserService.AddUser`, which constructs one directly, and all NHibernate persistence of users.
+`User` is one of two files in the `Entity.Hibernate` project, whose job is to hold the NHibernate entity classes and their Fluent mappings. Its companion `UserMapping.cs` (a FluentNHibernate `ClassMap<User>`) declares the table name, identity-based `Id` generation, and column constraints (both name columns `not null`, length 50). Remove this class and the mapping, the repository, and the business layer all lose their user entity — the user-management feature is built entirely around it.
 
 ### Relationships
 
-- **`DataAccessLayer.Entity<int>`** (defined in `DataAccessLayer/Entity.cs`) — the abstract base this class extends. It contributes the `Id` property (`int`, settable only within the class hierarchy, never outside) and implements `IEntity<int>` (defined in `DataAccessLayer/IEntity.cs`). All identity-related behavior is inherited; nothing about it is overridden here.
-- **`Entity.Hibernate/UserMapping.cs`** — a Fluent NHibernate `ClassMap<User>` that maps this class to the `Users` table. `Id` is a database identity column, `FirstName` and `LastName` are non-nullable columns of length 50, and `IsActive` is a non-nullable bit. This is why the properties are declared `virtual` — NHibernate needs to substitute them with generated accessors.
-- **`BusinessLayer/UserService.cs`** — the main caller. It instantiates `new User(firstName, lastName)` in `AddUser` and reads `Id`, `FirstName`, and `LastName` in `GetActiveUsers`.
+- **Base type:** `Entity<TKey>` (in `DataAccessLayer/Entity.cs`) — an abstract, `[Serializable]` base that contributes the `virtual Id` property with a protected setter, so the id is assigned only by the persistence layer (NHibernate, via `.GeneratedBy.Identity()` in `UserMapping`).
+- **Caller:** `BusinessLayer/UserService.cs` is the only place that constructs `User`. In `AddUser(UserDto)` it runs `repository.Save(new User(user.FirstName, user.LastName))` inside a transaction; `GetActiveUsers()` reads `User` through the repository's queryable API. The ViewModel/test layers only ever see `UserDto`, never this class.
 
 ### Behavior & Details
 
-- **`User(string firstName, string lastName)`** is the constructor application code uses. It stores both names and sets `IsActive = true`, so every user created through this path starts active. There is no validation here — `UserService.AddUser` guards against null or whitespace names with `Guard` assertions before constructing the entity.
-- **The `protected` parameterless constructor** exists because NHibernate materializes entities via reflection without calling your constructor. It assigns `FirstName = null!` and `LastName = null!` to satisfy nullable-reference-type analysis; the `null!` suppresses warnings without asserting a real value, since NHibernate populates the actual values right after construction. Marking it `protected` keeps application code from accidentally creating an unpopulated user.
-- **`FirstName`, `LastName`, `IsActive`** are plain `virtual` auto-properties with no logic. Their `virtual` modifier is not for subclassing — it is a requirement of the NHibernate lazy-loading mechanism, which generates a subclass at runtime.
-- The `Id` property comes from `Entity<int>`; it is `[Browsable(false)]` and its setter is `protected`, so application code can read it but never assign it — NHibernate fills it from the database identity value.
+Two constructors, with a deliberate split of responsibility:
+
+- `protected User()` — required so NHibernate can materialize rows from the database. It sets `FirstName` and `LastName` to `null!` because NHibernate then overwrites them from the mapped columns. It does **not** touch `IsActive`; that property defaults to `false` at instantiation and is then overwritten from the column, so the in-code default never survives a load.
+- `public User(string firstName, string lastName)` — the only way application code creates a user. It copies both names and sets `IsActive = true`, so every user persisted through `UserService.AddUser` starts active. There is no other code path that creates a `User`.
+
+Notable behaviours and caveats:
+
+- **All properties are `virtual`** — this is required so NHibernate can intercept reads/writes for lazy loading. Keeping them `virtual` is a hard constraint if you edit this class.
+- **`Id` is read-only from this class.** The property is inherited from `Entity<int>` and has a `protected set` — the application code can read `u.Id` (e.g. when building a `UserDto`) but cannot assign it; identity generation is the database's job.
+- **`IsActive` is write-only from application code in practice.** Nothing in the repository currently sets it to `false` — it is initialized to `true` at creation and only ever read back from the database. (Note also that `GetActiveUsers()` does not actually filter on `IsActive`; it selects all users despite its name.)
+- **No validation on the entity itself.** Whitespace checks on the names happen in `UserService.AddUser` before a `User` is constructed, and database-level `not null` constraints are declared in `UserMapping`. The entity performs no checks of its own.
 
 ### Rough edges
 
-- `UserService.AddUser` uses the public constructor, which always sets `IsActive = true`; there is currently no supported way to persist an inactive user or reactivate one, and `ShowUsersViewModel` treats `Updated`/`Deleted` as `NotImplementedException`.
-- `GetActiveUsers` is named for active users but its LINQ query applies no filter on `IsActive`, so it returns every user.
+- The protected constructor's `FirstName = null!; LastName = null!;` assignment is dead in practice — NHibernate overwrites both properties when it hydrates an entity, so the assignments serve no purpose.
+- `GetActiveUsers()` in `UserService` never filters by `IsActive`, so the property is effectively write-on-creation with no consumer — worth checking whether that is intended.

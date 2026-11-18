@@ -1,41 +1,33 @@
-# App.config
-
-**Path:** `WinFormsApp1/App.config`
+# `WinFormsApp1/App.config`
 
 ### Purpose
 
-This is the .NET application configuration file for the WinForms client. Its one job is to supply the SQL Server connection string that the data-access layer uses to reach the `Users` database.
+Runtime configuration for the `WinFormsApp1` executable. It supplies a single `appSettings` entry, `ConnectionString`, that points at a local SQL Server instance: `Server=localhost;Database=Users;Integrated Security=True;TrustServerCertificate=True;`. The WinForms app itself never reads this key directly — it exists so the business layer can build its NHibernate session factory when the app starts.
 
 ### Role in the Codebase
 
-`App.config` is the runtime configuration file for the `WinFormsApp1` project. At build time it is transformed into `WinFormsApp1.exe.config` and read at startup by the .NET configuration system. It holds a single `<appSettings>` entry, `ConnectionString`, whose value is:
+`App.config` is the standard .NET host configuration file for the `WinFormsApp1` project. At build time the SDK transforms it into `WinFormsApp1.exe.config`, and the .NET configuration system makes its `appSettings` section available to the process at startup via `ConfigurationManager`.
 
-```
-Server=localhost;Database=Users;Integrated Security=True;TrustServerCertificate=True;
-```
+The consumer chain runs through the composition container created in `WinFormsApp1/Program.cs`:
 
-This points at a local SQL Server instance (`localhost`), targets the `Users` database, authenticates via Windows credentials (`Integrated Security=True`), and disables server-certificate validation (`TrustServerCertificate=True`) — typical for a local development setup.
+1. `BusinessLayer/ModelContext.cs` reads the value at construction time:
+   ```csharp
+   : ModelContextBase(ConfigurationManager.AppSettings["ConnectionString"]!, ["Entity.Hibernate"]);
+   ```
+2. `ModelContext` extends `ModelContextBase` (`DataAccessLayer.Hibernate/ModelContextBase.cs`), which stores the string as the read-only `ConnectionString` property.
+3. `RepositoryFactory` (`BusinessLayer/RepositoryFactory.cs`) takes `IModelContext` in its `[ImportingConstructor]` and forwards `context.ConnectionString` into the NHibernate factory, which assumes SQL Server (FluentNHibernate `MsSql2012` configuration).
 
-If the file or the key were removed, the application would fail to start: the consumer reads the setting with a non-null-asserted call (see below), so a missing key throws rather than degrading gracefully.
+The WinForms project reaches this chain only indirectly: `WinFormsApp1.csproj` references `UserManagement`, which references `BusinessLayer`. When `Program.Main` builds the `CompositionContainer`, `ModelContext` is among the parts that get constructed, which is the moment the app setting is read.
 
-### Relationships
-
-The value is consumed by `BusinessLayer/ModelContext.cs`, which does:
-
-```csharp
-public class ModelContext()
-    : ModelContextBase(ConfigurationManager.AppSettings["ConnectionString"]!, ["Entity.Hibernate"]);
-```
-
-`ModelContext` passes the string to `DataAccessLayer.Hibernate/ModelContextBase.cs`, which stores it as the `ConnectionString` property. From there it flows to `RepositoryFactory` and `SessionFactoryBuilder` in `DataAccessLayer.Hibernate`, where it is used to build the NHibernate session factory. The WinForms `Program.cs` pulls `ModelContext` in via MEF (`[Export(typeof(IModelContext))]`), so this config file is the root of the whole data-access chain for this client.
-
-Note the same connection-string value is duplicated verbatim in `ConsoleApp1/App.config` and `WpfApp1/App.config` — the three front-end projects in this solution each carry their own copy, so changing the database target requires editing each one.
+The same key and value are duplicated in `ConsoleApp1/App.config` and `WpfApp1/App.config` — each host project needs its own copy because the setting is read from the *current* executable's configuration.
 
 ### Behavior & Details
 
-- The file contains only one `appSettings` key; there are no connectionStrings sections, binding redirects, or custom sections.
-- Because `ModelContext` uses `ConfigurationManager.AppSettings["ConnectionString"]!` with a null-forgiving operator, the application assumes the key always exists. There is no fallback value anywhere — removing or mistyping the key produces a `NullReferenceException` at startup when the `ModelContext` singleton is first created.
+- **The key is load-bearing, not optional.** `ModelContext` applies a null-forgiving operator (`!`) to `ConfigurationManager.AppSettings["ConnectionString"]`. If the key is missing from the exe config, the constructor silently receives `null` and the failure surfaces later, when NHibernate tries to open a connection with a null connection string.
+- **The value is a literal, not a template.** No transforms or placeholders are used; the string is taken verbatim. Changing the database means editing this file (and the two sibling `App.config` copies if the other hosts should follow).
+- **`Integrated Security=True`** means Windows authentication — no credentials in the string — and `TrustServerCertificate=True` suppresses server certificate validation, which matters for a `localhost` dev instance.
 
 ### Rough edges
 
-- The connection string is hardcoded to `localhost` in three separate `App.config` files (WinForms, WPF, Console). Any environment change (different server, credentials, database name) must be made in every copy, and they have already drifted as a pattern risk rather than currently.
+- No fallback exists if the `ConnectionString` key is absent; the `!` in `ModelContext` hides the null until connection time.
+- The identical connection string is maintained by hand in three `App.config` files; a change in one does not propagate to the others.

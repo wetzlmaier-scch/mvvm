@@ -1,35 +1,46 @@
-I have enough context to document this file accurately.
-
-# RepositoryFactory.cs
-
-**Path:** `BusinessLayer/RepositoryFactory.cs`
+# `BusinessLayer/RepositoryFactory.cs`
 
 ### Purpose
 
-`RepositoryFactory` exists to make business-layer services able to obtain NHibernate-backed repositories without knowing anything about how the database session is created. It is the composition root for the persistence stack: it wires a connection string and the mapping assembly from `IModelContext` into the NHibernate infrastructure, and exposes repository instances to the rest of the business layer through the `IRepositoryFactory` contract.
+`RepositoryFactory` is the MEF-exported, NHibernate-backed repository factory that business-layer services use to open repositories against the database. It exists so that services like `UserService` can ask for repositories without knowing anything about NHibernate, session factories, connection strings, or mapping assemblies. All of that plumbing lives in `DataAccessLayer.Hibernate`; this class only pins down *how this application* configures that plumbing.
+
+It is the BusinessLayer's concrete point where composition meets data access. It closes the generic `HibernateRepositoryFactory<TKey>` at `TKey = int` (the application's entity key type) and publishes the result under the BusinessLayer's own `IRepositoryFactory` contract.
 
 ### Role in the Codebase
 
-This class is a thin, MEF-activated glue class in the `BusinessLayer` project. It does no business logic of its own — it closes over the generic, infrastructure-level `HibernateRepositoryFactory<TKey>` (defined in `DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`) by pinning `TKey` to `int`, and adds the `IRepositoryFactory` identity so that the layer only depends on its own interface.
+This class is a thin, MEF-activated glue class. It does no business logic — it has no methods of its own and no fields. Everything is inherited from `HibernateRepositoryFactory<int>` (defined in `DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`) or obtained through its `[ImportingConstructor]`.
 
-It is exported to the MEF container via `[Export(typeof(IRepositoryFactory))]` and constructed through its `[ImportingConstructor]`, so it is never instantiated directly in code. Services like `UserService` (`BusinessLayer/UserService.cs`) take `IRepositoryFactory` in their constructor and call `Create()` to get a disposable repository per operation. If this class were removed, the container would have no export satisfying `IRepositoryFactory`, and every business service that depends on it would fail to compose.
+It is part of the BusinessLayer's composition set. The host applications (`ConsoleApp1`, `WinFormsApp1`, `Mvvm.Wpf`) build a `CompositionContainer` via `Common/Composition/CompositionHelper.cs`, which scans assemblies for `[Export]`-annotated types. `RepositoryFactory` is one such type. If it were removed, `UserService` — which imports `IRepositoryFactory` in its `[ImportingConstructor]` — would fail to compose at startup, and the entire BusinessLayer would stop resolving.
 
 ### Relationships
 
-- **Base class:** `HibernateRepositoryFactory<int>` — a concrete generic class in `DataAccessLayer.Hibernate` whose `protected` constructor takes a connection string and an array of mapping-assembly names and builds an NHibernate `ISessionFactory` using FluentNHibernate (SQL Server, with a schema update). `RepositoryFactory` inherits its entire lifecycle from there and adds no members of its own beyond the constructor.
-- **Implemented interface:** `IRepositoryFactory` (`BusinessLayer/IRepositoryFactory.cs`), which is an empty marker interface over `IHibernateRepositoryFactory<int>` (`DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs`). That interface in turn extends `IRepositoryFactory<IHibernateRepository<TKey>, TKey>`, so `Create()` returns a stateless-session-backed `IHibernateRepository<int>`.
-- **Import:** `IModelContext` (`DataAccessLayer.Hibernate/IModelContext.cs`), resolved at composition time to the layer's `ModelContext` (`BusinessLayer/ModelContext.cs`), which supplies the `ConnectionString` from app config and `MappingAssemblies` as `["Entity.Hibernate"]`.
-- **Callers:** MEF-composed business services that import `IRepositoryFactory` — currently `UserService`.
+- **Base class:** `HibernateRepositoryFactory<TKey>` from `DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`. This is the generic, engine-specific factory. `RepositoryFactory` specializes it to `HibernateRepositoryFactory<int>` and adds no members. Everything the class does (session-factory construction, `Create()`, `Drop()`) is inherited.
+- **Implemented interface:** `IRepositoryFactory` from `BusinessLayer/IRepositoryFactory.cs`. That interface is a non-generic marker that simply extends `IHibernateRepositoryFactory<int>` (from `DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs`), so implementing it is satisfied by the inherited `Create()` and `Drop()`.
+- **Injected dependency:** `IModelContext` from `DataAccessLayer.Hibernate/IModelContext.cs`, imported through the `[ImportingConstructor]`. In practice the export satisfying that import is `BusinessLayer/ModelContext.cs` (`ModelContext`), which pulls `ConnectionString` from `AppSettings["ConnectionString"]` and supplies `["Entity.Hibernate"]` as the mapping assembly.
+- **Consumers:** `UserService` (`BusinessLayer/UserService.cs`) imports `IRepositoryFactory` and calls `Create()` inside a `using` block for each operation. Any future service in the BusinessLayer would follow the same pattern.
 
 ### Behavior & Details
 
-- The constructor forwards `context.ConnectionString` and `context.MappingAssemblies` to the base NHibernate factory, which does all real work: FluentNHibernate configuration for a SQL Server 2012 provider, a `SchemaUpdate` on startup, loading fluent mappings from the named assemblies, and building the session factory.
-- Because the base constructor runs on construction, the NHibernate session factory is built exactly when MEF composes `RepositoryFactory`. The base class also guards against a second construction with a static `IsInitialized` flag and throws `InvalidOperationException` ("Already initialized") if a second instance is ever requested, and wraps any setup failure in a `DataAccessException`.
-- `Create()` (inherited) returns a new `IRepository<int>` per call over a freshly opened stateless session; callers dispose the repository after use (as `UserService` does with `using var repository = ...`).
-- Note that `HibernateRepositoryFactory.Drop()` is a `NotImplementedException` stub, so there is no working teardown path for the session factory in the current code.
+The class has one constructor, marked `[ImportingConstructor]` for MEF:
+
+```csharp
+[ImportingConstructor]
+public RepositoryFactory(IModelContext context)
+    : base(context.ConnectionString, context.MappingAssemblies)
+{ }
+```
+
+It does exactly one thing: forwards the connection string and mapping assemblies from the injected `IModelContext` to the base class. The base constructor (`HibernateRepositoryFactory<TKey>`) is where all the real work happens — it calls `Fluently.Configure()` to build a SQL Server 2012 session factory, runs a `SchemaUpdate` against the configuration, loads fluent mappings from each named assembly, and caches the result in a static `IsInitialized` flag.
+
+A few inherited behaviors are worth knowing because they surface through this class:
+
+- **Singleton-by-throw.** The base constructor uses a `static bool IsInitialized` and throws `InvalidOperationException("Already initialized")` on the second call. Because MEF's default sharing policy is `Any`, this is fine — the container instantiates exactly one `RepositoryFactory`. If anything ever constructs `new RepositoryFactory(context)` directly by hand, the first such call succeeds and every subsequent one throws.
+- **`Create()` opens a stateless session.** Each call returns a new `HibernateRepository<TKey>` bound to a fresh `OpenStatelessSession()`. Callers must dispose the repository to release the session.
+- **`Drop()` is not implemented.** The inherited `Drop()` throws `NotImplementedException`, so do not use it for shutdown logic.
+- **Configuration is fixed to SQL Server.** The base hard-codes `MsSqlConfiguration.MsSql2012` and `MicrosoftDataSqlClientDriver`; the only knobs this class (via `ModelContext`) supplies are the connection string and the mapping-assembly names.
+- **Failure surfaces at construction time.** If the connection string is bad or a mapping assembly cannot be loaded, the base constructor wraps the original exception in a `DataAccessException("Error initializing Hibernate repository factory", e)` and throws. The first attempt to resolve `IRepositoryFactory` from the container is where you will see that.
 
 ### Rough edges
 
-- `ModelContext` is defined as `public class ModelContext()` — a primary constructor taking no parameters that are actually used; the arguments (`ConnectionString`, `MappingAssemblies`) come from the `ModelContextBase` base-class constructor instead. This compiles in C# 12, but it looks like a leftover and is worth confirming is intentional.
-- The one-instance-per-process enforcement in the base class relies on a static flag, so a second composition (e.g., a second container or a test re-composing the graph) throws rather than sharing or rebuilding.
-- `Drop()` is unimplemented, so the session factory lifecycle has no symmetric teardown to its construction.
+- `ModelContext.cs` is declared as `public class ModelContext()` — a primary constructor with no parameters — yet it derives from `ModelContextBase(...)` using arguments that look like constructor-initializer syntax. As written it is not valid C#; the file likely has a typo or is mid-refactor. `RepositoryFactory` itself is not at fault, but its MEF import of `IModelContext` depends on `ModelContext` compiling and exporting correctly.
+- The static `IsInitialized` guard in `HibernateRepositoryFactory<TKey>` means "already initialized" is a process-global state shared across every `TKey` specialization, not per-instance. In this repository only `int` is used, so it is a latent hazard rather than a live one.

@@ -1,21 +1,29 @@
 ### Purpose
 
-`ConsoleApp1/App.config` (path: `ConsoleApp1/App.config`) is the application configuration file for the `ConsoleApp1` host executable. It exists to supply the SQL Server connection string that the composition-based data layer needs at runtime.
+`App.config` is the runtime configuration for the `ConsoleApp1` project. It supplies the single `ConnectionString` app setting — a SQL Server connection to a `Users` database on `localhost` using Windows integrated security. The console app itself never reads this setting; it exists because the composition-root code pulled into the app does.
 
 ### Role in the Codebase
 
-The file holds a single `appSettings` entry, `ConnectionString`, pointing at a local SQL Server instance: `Server=localhost;Database=Users;Integrated Security=True;TrustServerCertificate=True;`. It is the runtime counterpart of the `BusinessLayer` and `DataAccessLayer.Hibernate` projects: `ModelContext` in `BusinessLayer/ModelContext.cs` reads this exact key at construction time via `ConfigurationManager.AppSettings["ConnectionString"]` and hands it to `ModelContextBase`, which uses it to build the Hibernate session factory (`SessionFactoryBuilder`). Without this file — or without the `ConnectionString` key — `ModelContext` receives `null` (the code uses the null-forgiving operator `!` rather than checking) and the session factory build fails, so no part of the user-management demo in `ConsoleApp1/Program.cs` can run.
+The file is consumed only through .NET's configuration system. At build time it becomes `ConsoleApp1.exe.config`, and at runtime `System.Configuration.ConfigurationManager.AppSettings["ConnectionString"]` resolves against it. That read happens in `ModelContext` (`BusinessLayer/ModelContext.cs`), which is exported as `IModelContext` and composed into `ConsoleApp1`'s MEF container.
 
-The same key and value are duplicated in `WinFormsApp1/App.config` and `WpfApp1/App.config`, which means each host application carries its own copy of the connection string rather than sharing one configuration source.
+Without this file (or the key in it), `ModelContext`'s constructor receives `null` for the connection string, and the failure surfaces later when the NHibernate session factory tries to open a connection. There is no fallback value anywhere in the codebase.
+
+The same connection string is duplicated verbatim in `WinFormsApp1/App.config` and `WpfApp1/App.config` — each host project carries its own copy rather than sharing one.
 
 ### Relationships
 
-- **Consumer:** `BusinessLayer/ModelContext.cs` is the only reader of this key. It resolves the app settings through `System.Configuration.ConfigurationManager`, which picks up the entry from the active executable's `App.config`.
-- **Downstream chain:** `ModelContextBase` (`DataAccessLayer.Hibernate/ModelContextBase.cs`) stores the string in its `ConnectionString` property; `HibernateRepositoryFactory` and `SessionFactoryBuilder` in the same project apply it to Hibernate's configuration.
-- **Host:** `ConsoleApp1/Program.cs` builds a `CompositionContainer` via `CompositionHelper.CreateCompositionContainer(["ConsoleApp1.exe"])` (from `Common/Composition/CompositionHelper.cs`), which discovers exported parts from the loaded assemblies — including `ModelContext` — and triggers the config read. The console app itself never reads the config file directly.
+- **`BusinessLayer/ModelContext.cs`** — the direct consumer. Its primary constructor argument is `ConfigurationManager.AppSettings["ConnectionString"]!`, passed (with a null-forgiving operator) to `ModelContextBase` in `DataAccessLayer.Hibernate/ModelContextBase.cs`.
+- **`DataAccessLayer.Hibernate/HibernateRepositoryFactory.cs`** — inherits the stored connection string via `IModelContext` and passes it to FluentNHibernate's `MsSql2012` configuration, so the value ultimately determines which database `SaveUserAsync()` and the user queries in `Program.cs` talk to.
+- **`DataAccessLayer.Hibernate/SessionFactoryBuilder.cs`** — also takes a connection string, but is currently dead code; it does not affect this app's behaviour.
 
 ### Behavior & Details
 
-- The connection uses Windows integrated security (`Integrated Security=True`) against a `localhost` server and a database named `Users`; `TrustServerCertificate=True` skips TLS certificate validation, typical of a local development setup.
-- The value is a plain literal with no `&lt;connectionStrings&gt;` section, environment-variable substitution, or per-environment overrides. Changing the database location means editing this key in every host's `App.config` that shares it.
-- `Program.cs` passes `"ConsoleApp1.exe"` to the composition helper, but that helper's string overload treats the argument as a name of an assembly to *ignore* (its comment in `Program.cs` notes the value is "not a valid .net assembly"), so this call ignores nothing in practice; it does not affect which config file is read.
+- The value is `Server=localhost;Database=Users;Integrated Security=True;TrustServerCertificate=True;`. The `Integrated Security=True` part means the app connects as the Windows account running the process — no username or password lives in the file.
+- `TrustServerCertificate=True` suppresses SQL Server certificate validation. This is a local-development convenience, not something you want in a deployed environment.
+- Only this one key exists; there are no other `appSettings`, `connectionStrings` sections, or config switches.
+- Changing `Server`, `Database`, or the security mode here changes the database every layer in the composition graph talks to. There is no environment-specific variant (no `App.Development.config` etc.) in this project.
+
+### Rough edges
+
+- The connection string is copy-pasted across three `App.config` files, so pointing the apps at a different database requires editing all three.
+- `ModelContext` assumes the key exists and uses `!` on the lookup; a missing setting fails only at connection time, far from its cause.

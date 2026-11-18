@@ -1,32 +1,26 @@
-# WpfApp1/App.xaml.cs
+### `WpfApp1/App.xaml.cs`
 
 ### Purpose
 
-This file is the code-behalf half of the WPF application's entry point. It defines `WpfApp1.App`, the concrete `Application`-derived class that launches the app. All real work — module discovery, composition, startup, shutdown, and exception handling — is delegated to its base class `MvvmApplication` in the `Mvvm.Wpf` project. The class body here is empty; the file exists so the compiler and XAML tooling can tie the `x:Class="WpfApp1.App"` declaration in `App.xaml` to a C# type that inherits `MvvmApplication` (which itself inherits `System.Windows.Application`).
-
-The file also declares `[assembly: SupportedOSPlatform("windows")]` at the top. Since the project is `net10.0-windows`, this silences the TFM analyzer for Windows-specific APIs used throughout the app; it's an assembly-level attribute, so it effectively applies to the whole project.
+This file is the partial-code side of the WPF application entry point for the `WpfApp1` application. It does two things: declares the assembly as Windows-only via `[assembly: SupportedOSPlatform("windows")]`, and defines `App`, a partial class that extends `MvvmApplication`. The class body itself is empty — all of its behaviour comes from the base class and from the corresponding `App.xaml` markup, which sets `mvvm:MvvmApplication` as the root element and binds the `x:Class` to `WpfApp1.App`.
 
 ### Role in the Codebase
 
-`App` is the executable entry point of the `WpfApp1` project (`OutputType` is `WinExe` in `WpfApp1.csproj`). It is the `partial class` whose other half is generated from `WpfApp1/App.xaml` at build time; the XAML file's root element is `<mvvm:MvvmApplication x:Class="WpfApp1.App">`, so the generated part provides the `Main`-related infrastructure while this source part supplies the class declaration and its base type.
-
-Removing this file (or its class declaration) would break the build, because the XAML-generated partial half has no type to merge with, and the app would have no `Application` subclass to run.
+This is the startup entry point of the WPF app. At runtime, the generated `Main` method (from `App.xaml`) instantiates `App`, and `MvvmApplication.OnStartup` takes over: it builds a MEF composition container, discovers exported `IModuleController` instances, and drives them through `Initialize()` / `Run()` (and `Shutdown()` on exit). In this project, the single module discovered is `DefaultModuleController` in `WpfApp1/Controller/DefaultModuleController.cs`, which constructs the main view/view-model pair and shows the main window. Removing this file (and `App.xaml`) would remove the application's entry point entirely.
 
 ### Relationships
 
-- **`MvvmApplication`** (`Mvvm.Wpf/MvvmApplication.cs`): the base class. `App` overrides nothing and adds no members, so its entire runtime behaviour comes from `MvvmApplication`:
-  - On startup it builds a MEF `CompositionContainer` from the assemblies in its directory (minus ignore lists), loads all exported `IModuleController`s, calls `Initialize()` on each, then `Run()` on each.
-  - If no modules are found, or a `ReflectionTypeLoadException` occurs while resolving them, it shows an error and shuts down with `ExitCodes.Error`.
-  - It hooks `DispatcherUnhandledException` and `AppDomain.UnhandledException`, logging via `Trace.TraceError` and showing a modal error dialog for non-terminating exceptions.
-  - On exit it calls `Shutdown()` on the module controllers in reverse order and disposes the container.
-- **`WpfApp1.csproj`**: references `Common`, `Mvvm.Wpf`, and `UserManagement`. Because `MvvmApplication`'s default constructor scans the app directory for assemblies to compose, the `UserManagement` project reference is what lets a module shipped in that assembly be discovered and started at runtime. Callers of this class: none directly — the OS/runtime instantiates `App` as the WPF startup object.
+- **Base class**: `MvvmApplication` in `Mvvm.Wpf/MvvmApplication.cs` (same repository, `Mvvm.Wpf` project). It is a `System.Windows.Application` subclass that implements the MEF-based module bootstrapping described above. `App` overrides nothing and adds no members; it only supplies the application identity.
+- **XAML pair**: `WpfApp1/App.xaml` — the other half of the partial class. Its root element is `mvvm:MvvmApplication` with `x:Class="WpfApp1.App"`, so the XAML-generated initializer and this code-behalf file together form the complete `App` class.
+- **Consumers**: nothing references `App` directly by name. It is referenced implicitly by the generated entry point and by the XAML. The module it hosts at runtime is `DefaultModuleController`, which is discovered by MEF, not by name.
 
 ### Behavior & Details
 
-- The class is `public partial` and inherits `MvvmApplication` with its default constructor semantics (no module assemblies specified, no ignore list, `SearchOption.TopDirectoryOnly`), meaning module discovery scans only the application's own directory.
-- No behavior of its own: no `OnStartup`/`OnExit` overrides, no event handlers, no static members. Anything you'd expect to change at app startup (module set, search scope, ignored assemblies) would go in this class by passing a `MvvmApplication(string[] moduleAssemblies, string[] ignoreAssemblies, SearchOption)`-style argument — currently it isn't.
+- `App` itself contributes no logic. It exists so the XAML root (`MvvmApplication`) can be subclassed with an app-local identity, and so the partial type generated from `App.xaml` has a code-side half.
+- The `[assembly: SupportedOSPlatform("windows")]` attribute is also applied (identically) in `Mvvm.Wpf/MvvmApplication.cs`; on the app project side it silences the `CA1416` "platform compatibility" analyzer warnings for WPF APIs used by this app's code. Note that this app is an MVVM WPF app, so it is inherently Windows-only regardless of the attribute.
+- All startup/shutdown behaviour (exception wiring, MEF container creation, module `Initialize`/`Run`/`Shutdown`, `Container.Dispose`) is inherited from `MvvmApplication` — see that file for details. Notable inherited behaviours: dispatcher and AppDomain unhandled-exception handlers are attached on startup; if no `IModuleController` is discovered, the app shows a "No module found." error box and shuts down; if `ReflectionTypeLoadException` is thrown during export discovery, the app logs the loader exceptions and shuts down.
 
 ### Rough edges
 
-- `[assembly: SupportedOSPlatform("windows")]` is duplicated: it appears both here and in `Mvvm.Wpf/MvvmApplication.cs`, which is harmless but redundant.
-- The base class's error messages are partly in German (`"Es ist ein Fehler aufgetreten."` / `"Fehler"`), so `App` inherits non-English UI text on exception.
+- `App` is an empty class with no members; its sole purpose is to exist as the XAML-bound application type. If a reader is looking for startup logic, it lives in `MvvmApplication.OnStartup`, not here.
+- The `[assembly: SupportedOSPlatform("windows")]` attribute is duplicated in both `WpfApp1/App.xaml.cs` and `Mvvm.Wpf/MvvmApplication.cs`; the compiler accepts this (same attribute, same args) but it is redundant in one of the two assemblies.

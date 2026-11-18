@@ -1,50 +1,46 @@
 ### Purpose
 
-`ConsoleApp1` is a thin console host application that serves as the command-line entry point for the user management demo. It exists to exercise the shared `UserManagement` module and its underlying business logic without requiring a graphical interface. The contents—`Program.cs`, `App.config`, and `ConsoleApp1.csproj`—belong together because they form the minimal set of files required to compile and run this specific host variant within the larger solution.
+`ConsoleApp1` is a lightweight console host for the `UserManagement` feature, serving as a headless client to verify the system's MEF composition and data access flow. It contains no UI logic or custom business rules; its sole responsibility is to act as a composition root. The contents belong together because they form the minimal executable unit required to initialize the dependency container, resolve the feature’s view models, and execute a simple data workflow (creating and listing users) without a graphical interface.
 
 ### Software Components
 
-The primary component is the `Program` class, defined in [Program.cs](ConsoleApp1/Program.md). Its `Main` method handles application startup, builds a MEF composition container, resolves the `IUserViewModel` export, and executes a fixed demo routine: saving a test user 100 times and printing the resulting user list.
+The directory contains one primary source code component and one configuration file.
 
-The [App.config](ConsoleApp1/App.md) file provides the runtime configuration, specifically the `ConnectionString` for the SQL Server database. Although the console application itself does not read this file directly, it is essential for the `BusinessLayer` and `DataAccessLayer` components to initialize their Hibernate session factories.
-
-The [ConsoleApp1.csproj](ConsoleApp1/ConsoleApp1.md) file defines the build configuration, targeting `net10.0-windows`. It references the `Common`, `Mvvm.Console`, and `UserManagement` projects, ensuring that the necessary assemblies are available for the MEF composition process at runtime.
+*   **Entry Point and Composition Root**: `Program.cs` defines the `Program` class and its `Main` method. This component handles the lifecycle of the application: it constructs the MEF composition container using `CompositionHelper`, resolves the `IUserViewModel` export, and drives the feature logic by invoking `AddUserViewModel.SaveUserAsync()` and `ShowUsersViewModel.OnLoadedAsync()`.
+*   **Runtime Configuration**: `App.config` provides the `ConnectionString` app setting. Although `Program.cs` does not directly read configuration, this file is critical because downstream components (specifically `ModelContext` in the `BusinessLayer`) resolve the connection string from here via `System.Configuration` to connect to the SQL Server database.
 
 ### Relationships
 
-The `Program` class in `Program.cs` acts as the bootstrap for the application. It relies on `Common/Composition/CompositionHelper` to scan the application directory and load assemblies into a `CompositionContainer`. This container then resolves the `UserViewModel` from the `UserManagement` project.
+The relationship in this directory is strictly unidirectional: the entry point initiates the composition process, and the configuration file supports the data layer resolved through that process.
 
-`App.config` supports the data access layer indirectly. When `ModelContext` is instantiated within the business layer, it reads the `ConnectionString` key from `App.config` to configure the database connection. Without this key, the application would fail during the composition or first database interaction.
+`Program.cs` relies on `Common` and `UserManagement` assemblies (external to this directory but loaded via the composition container) to perform its work. It uses `CompositionHelper.CreateCompositionContainer` to build a catalog from the output directory. Once the container is ready, it resolves `IUserViewModel`. This resolution triggers the MEF composition of the entire user management graph, including `AddUserViewModel` and `ShowUsersViewModel`.
 
-The dependency flow is linear: `Program.cs` triggers the composition, which loads `UserManagement` and its dependencies (Business/Data layers). Those layers, in turn, depend on the configuration provided by `App.config`.
+During the execution of these view models, the `BusinessLayer` (specifically `ModelContext`) reads the `ConnectionString` defined in `App.config`. Thus, `App.config` is a passive dependency that enables the active logic in `Program.cs` to persist data. There are no internal dependencies *between* files in this directory; `Program.cs` does not reference `App.config` directly, nor does `App.config` reference any code.
 
 ```mermaid
 flowchart TD
-    subgraph "ConsoleApp1"
-        Program["Program.cs<br/>(Entry Point)"]
-        Config["App.config<br/>(Connection String)"]
-        Proj["ConsoleApp1.csproj<br/>(Build Config)"]
+    subgraph ConsoleApp1 Directory
+        P[Program.cs<br/>Main / Composition Root]
+        C[App.config<br/>ConnectionString]
     end
 
-    subgraph "Shared Modules"
-        Composition["CompositionHelper<br/>(Common)"]
-        UserVM["UserViewModel<br/>(UserManagement)"]
-        ModelCtx["ModelContext<br/>(BusinessLayer)"]
+    subgraph External Dependencies
+        CH[Common CompositionHelper]
+        UM[UserManagement ViewModels]
+        BL[BusinessLayer ModelContext]
     end
 
-    Program -->|Initializes| Composition
-    Program -->|Resolves| UserVM
-    UserVM -->|Depends on| ModelCtx
-    ModelCtx -->|Reads| Config
-    Proj -->|Defines Dependencies| Program
-    Proj -->|Copies to Output| Config
+    P -->|calls| CH
+    P -->|resolves| UM
+    BL -->|reads| C
+    UM -->|uses| BL
 ```
 
 ### Rough edges
 
-`Program.cs` passes `"ConsoleApp1.exe"` to the composition helper to exclude it from the MEF scan. However, the actual assembly is typically built as `ConsoleApp1.dll`, so this exclusion string often matches nothing, potentially leading to unintended assembly loading behavior. Additionally, the demo logic contains a flaw where users are added to the list both during the save loop (via messenger events) and again during the final load, resulting in duplicate entries in the console output.
+*   The `App.config` connection string is hard-coded to `localhost` and `Integrated Security`, which fails silently or throws obscure errors if the local SQL Server instance is not running or the current user lacks permissions.
+*   `Program.cs` contains a redundant null check (`if (userViewModel == null)`) that is unreachable because `SingleOrDefault()` already throws an exception if no matches are found.
 
 ## Contents
 - [App.config](ConsoleApp1/App.md)
-- [ConsoleApp1.csproj](ConsoleApp1/ConsoleApp1.md)
 - [Program.cs](ConsoleApp1/Program.md)

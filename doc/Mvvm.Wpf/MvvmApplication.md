@@ -1,53 +1,53 @@
 # Mvvm.Wpf/MvvmApplication.cs
 
-## Purpose
+### Purpose
 
-`MvvmApplication` is the base `Application` class for WPF hosts of this codebase's MVVM framework. It exists so a WPF app's `App` class (see `WpfApp1/App.xaml.cs`, which is literally `public partial class App : MvvmApplication` with no body) gets a full application lifecycle for free: composition-container creation, module discovery via MEF, ordered module startup, teardown on exit, and a global exception policy — without any of that code appearing in the consuming app.
+`MvvmApplication` is the base `Application` class for WPF hosts of this codebase's MVVM framework. It exists so a WPF app can launch a MEF-composed, modular application without writing any bootstrap code of its own: a concrete `App` class inherits `MvvmApplication` and the entire lifecycle — assembly scanning, container construction, module discovery, initialization, and teardown — happens in the base class's overridden `OnStartup` and `OnExit`.
 
-It's the WPF counterpart of what `WinFormsApp1/Program.cs` and `ConsoleApp1/Program.cs` do imperatively (both call `CompositionHelper.CreateCompositionContainer(...)` and drive the same `Initialize()` → `Run()` → `Shutdown()` sequence themselves).
+### Role in the Codebase
 
-## Role in the Codebase
+`Mvvm.Wpf` is a small library that WPF applications reference. `MvvmApplication` is the half of it that hosts the app; the sibling `MessageService` handles UI messaging. A WPF project wires it in by making its XAML root element an `MvvmApplication`-derived class. In this solution, `WpfApp1/App.xaml` declares `<mvvm:MvvmApplication x:Class="WpfApp1.App">` and `WpfApp1/App.xaml.cs` is the empty `partial class App : MvvmApplication` — the concrete class overrides nothing, so its complete runtime behaviour comes from this class.
 
-The `Mvvm.Wpf` project is a small library (this file plus `MessageService.cs`) that WPF applications reference. `MvvmApplication` is the piece an app plugs into by making its `App.xaml` root element `mvvm:MvvmApplication` (as `WpfApp1/App.xaml` does) and its code-behind derive from it. The app then supplies behaviour through ME
+Without this class, WPF hosts would have to replicate the MEF bootstrap sequence themselves (build the container, resolve `IModuleController` exports, drive the initialize/run/shutdown phases). The WinForms host does exactly that by hand in `WinFormsApp1/Program.cs`; `MvvmApplication` is the WPF equivalent packaged as a base class.
 
-F exports in its own assemblies rather than code in `App`. Removing it would force every WPF host to re-implement container creation, the two-phase module start, reverse-order shutdown, and the exception handlers.
+### Relationships
 
-## Relationships
+- **`System.Windows.Application`** (WPF framework type) — the base class. `MvvmApplication` overrides only `OnStartup` and `OnExit`; everything else about WPF `Application` behaviour is inherited unchanged.
+- **`CompositionHelper`** (`Common/Composition/CompositionHelper.cs`) — static helper called in `OnStartup` to build the `CompositionContainer`. It scans the directory of `Common`'s executing assembly for loadable assemblies (minus the ignore list), adds the executing and entry assemblies, loads any explicitly named `moduleAssemblies` with `Assembly.LoadFrom`, and composes the `CompositionContainer` itself into the container as an exported value.
+- **`IModuleController`** (`Mvvm/IModuleController.cs`) — the module lifecycle contract with three methods: `Initialize()`, `Run()`, `Shutdown()`. `MvvmApplication` resolves all exported implementations and drives them through those phases.
+- **`ExitCodes`** (`Common/ExitCodes.cs`) — supplies `ExitCodes.Error` (`-1`) for the two fatal startup paths.
+- **`[assembly: SupportedOSPlatform("windows")]`** — applied to the `Mvvm.Wpf` assembly, marking it as Windows-only. Note `WpfApp1/App.xaml.cs` applies the same attribute again, redundantly.
 
-- **`System.Windows.Application`** (WPF framework type) — the base class. `MvvmApplication` adds nothing visible to WPF itself; it only overrides `OnStartup` and `OnExit` and adds constructors.
-- **`Common.Composition.CompositionHelper`** (`Common/Composition/CompositionHelper.cs`) — builds the `CompositionContainer`. It scans the folder containing the *Common* assembly for files with assembly extensions, skips names in `ignoreAssemblies` (case-insensitive), and additionally loads whatever is passed in `moduleAssemblies` via `Assembly.LoadFrom`. A container failure here is caught and only `Console.WriteLine`d, so a WPF app gets no UI feedback from it.
-- **`Mvvm.IModuleController`** (`Mvvm/IModuleController.cs`) — the contract with the app's modules: `Initialize()`, `Run()`, `Shutdown()`. Modules opt in with `[Export(typeof(IModuleController))]`, e.g. `WpfApp1/Controller/DefaultModuleController` (which in `Run()` shows the main view, and in `Shutdown()` closes it).
-- **`Common.ExitCodes`** (`Common/ExitCodes.cs`) — supplies `ExitCodes.Error` (-1) for the two fatal startup paths.
-- **Consumers** — WPF app `App` classes derived from it (the `App` in `WpfApp1`), typically via XAML, since WPF instantiates `Application` from XAML rather than from a constructor call.
+### Behavior & Details
 
-## Behavior & Details
+**Construction.** The primary constructor is `MvvmApplication(string[] moduleAssemblies, string[] ignoreAssemblies, SearchOption searchOption = SearchOption.TopDirectoryOnly)`. Two convenience constructors exist: one taking no arrays and one taking only `ignoreAssemblies`. Both forward to the primary with an empty `moduleAssemblies`. All constructor arguments are captured in read-only `protected` properties, so a derived class can inspect or re-run composition with different settings, but the values are fixed at construction time.
 
-**Constructors.** The primary constructor takes `string[] moduleAssemblies`, `string[] ignoreAssemblies`, and an optional `SearchOption` (default `TopDirectoryOnly`), all stored as properties. The two public overloads delegate with an empty `moduleAssemblies`; one takes no arguments, the other only `ignoreAssemblies`. So the default behavior is: scan the app's own directory, exclude nothing, no explicitly named extra assemblies.
+Because XAML-generated code calls the parameterless constructor, WPF hosts that don't override the constructor get an empty `moduleAssemblies` and rely entirely on `CompositionHelper`'s directory scan to find module assemblies.
 
-Note the parameter order is `moduleAssemblies` *then* `ignoreAssemblies`. The single-array overload is therefore `MvvmApplication(string[] ignoreAssemblies, ...)` — if a caller passes one array, it is treated as *ignore* names, not as assemblies to load. Easy to get backwards.
+**Startup (`OnStartup`).** The sequence is:
 
-**Startup (`OnStartup`).** In order:
+1. Subscribe to `DispatcherUnhandledException` and `AppDomain.CurrentDomain.UnhandledException`.
+2. Build the container via `CompositionHelper.CreateCompositionContainer(ModuleAssemblies, IgnoreAssemblies, searchOption)`.
+3. Resolve `GetExportedValues<IModuleController>()`. If that throws `ReflectionTypeLoadException`, each loader exception's message is written to `Console` and the app shuts down with `ExitCodes.Error`. Console output is invisible in a normal WPF app, so in practice the failure is a silent exit with code `-1`.
+4. If zero modules were resolved, show a `"No module found."` `MessageBox` and exit with `ExitCodes.Error`.
+5. Call `Initialize()` on every module controller, then `Run()` on every module controller. The two-phase loop means every module is fully initialized before any module starts running, so one module's `Run()` can safely depend on another's `Initialize()` having completed.
 
-1. Register the two exception handlers (see below).
-2. Create the `CompositionContainer` via `CompositionHelper`.
-3. `GetExportedValues<IModuleController>()`. If that throws `ReflectionTypeLoadException`, each loader exception is written to `Console` and the app exits with `ExitCodes.Error` (console output is invisible in a WPF app, so this is effectively a silent early exit).
-4. If zero modules were exported, show a "No module found." `MessageBox` and exit with `ExitCodes.Error`.
-5. Call `Initialize()` on every module, then — in a second pass — `Run()` on every module. The split means every module is fully initialized before any module's `Run()` executes, which lets a module's `Run()` assume other modules' `Initialize()` already happened.
+**Shutdown (`OnExit`).** `Shutdown()` is called on all module controllers in reverse order of startup (via `ModuleControllers.Reverse()`), then the `CompositionContainer` is disposed. This guarantees a module is torn down only after every module that started after it has already shut down.
 
-**Shutdown (`OnExit`).** `ModuleControllers.Reverse().Shutdown()` — modules shut down in the opposite order they started. Then `Container.Dispose()`. If startup failed before any modules ran, this loop is a no-op and the container (possibly null, if `OnStartup` returned before assigning it) is disposed only if non-null.
+**Exception handling.** Two private handlers funnel into `HandleException`:
 
-**Exception handling.** Two handlers cover the usual WPF split:
+- `AppDispatcherUnhandledException` handles WPF dispatcher exceptions, logs them, sets `e.Handled = true` (so the app does not crash), and shows a German-language `MessageBox` (`"Es ist ein Fehler aufgetreten."`) because `isTerminating` is `false`.
+- `AppDomainUnhandledException` handles AppDomain-level exceptions. It also logs, but only shows the `MessageBox` if the exception is *not* terminating — for terminating exceptions the process is ending anyway, so no dialog is shown.
 
-- `AppDispatcherUnhandledException` catches exceptions on the UI thread, calls the shared handler, then sets `e.Handled = true` — so the app survives any non-terminating UI exception.
-- `AppDomain.UnhandledException` catches everything else; it cannot prevent termination.
+Both handlers log via `Trace.TraceError(e.ToString())`, which in a WPF app goes to the debug output window, not the console.
 
-Both funnel into `HandleException`, which `Trace.TraceError`s the exception and — only when not terminating — shows a modal error box. The UI string here is German ("Es ist ein Fehler aufgetreten." / "Fehler") while the no-modules message above is English, so localisation is inconsistent within the class.
+**Failure modes a caller should know about:**
 
-There's a comment claiming the handlers are skipped in Debug mode so the debugger can break on exceptions; the code actually registers them unconditionally, so in Debug a WPF app will still show the error box and swallow UI exceptions rather than breaking.
+- If `moduleAssemblies` contains an assembly that is already in the scan set, `CompositionHelper` throws `InvalidOperationException`, which is *not* caught in `OnStartup`. It becomes an unhandled exception during startup.
+- `ReflectionTypeLoadException` is the only exception type caught during module resolution. A different exception type (e.g., a malformed MEF export) would propagate up and crash the app before the `MessageBox` path is reached.
 
-## Rough edges
+### Rough edges
 
-- The comment above the handler registration doesn't match the code: handlers are registered in all configurations, so the "don't handle in Debug" intent isn't implemented.
-- The `ReflectionTypeLoadException` path reports to `Console`, which a WPF app has no console for — the user sees only a sudden exit.
-- The single-`string[]` overload takes `ignoreAssemblies`, the opposite of what the parameter order in the primary constructor suggests; a reader of the signature alone will guess wrong.
-- Error message language is mixed (German dialog, English "No module found.").
+- Fatal startup errors (the `ReflectionTypeLoadException` path) are written to `Console.WriteLine`, which has no visible output window in a WPF application. The user sees a silent exit with code `-1` and no explanation.
+- The unhandled-exception `MessageBox` text is in German (`"Es ist ein Fehler aufgetreten."`) while the "No module found" message is in English, so the error surface is inconsistent for non-German-speaking users.
+- The single-array convenience constructor `MvvmApplication(string[] ignoreAssemblies, ...)` is easy to confuse with `moduleAssemblies` at the call site, since the parameter is unnamed in the primary constructor's signature.

@@ -1,44 +1,47 @@
-# `DataAccessLayer/IRepository.cs`
+# DataAccessLayer/IRepository.cs
 
 ### Purpose
 
-This interface defines the read-only query contract for repositories in the `DataAccessLayer` namespace. It exists so that the rest of the codebase can depend on a database-agnostic set of query operations rather than a specific ORM, letting `DataAccessLayer.Hibernate` supply the Hibernate-based implementation.
+`DataAccessLayer/IRepository.cs` defines `IRepository<TKey>`, the key-based, ORM-agnostic read contract for the data access layer. Business code queries entities through this interface without knowing which persistence engine sits behind it. It deliberately covers only read operations — finding, filtering, and projecting entities — so the same contract stays true regardless of how an implementation handles writes, transactions, or sessions.
+
+It exists alongside sibling contracts (`IRepositoryFactory`, `IUnitOfWork`) in the interface-only `DataAccessLayer` project, keeping the persistence engine out of the type signatures that higher layers depend on.
 
 ### Role in the Codebase
 
-`IRepository<TKey>` sits at the core of the data access abstraction. It is implemented by `IHibernateRepository<TKey>` in `DataAccessLayer.Hibernate/IHibernateRepository.cs`, which extends it with write capability (`Save`) and a unit-of-work, so this interface is deliberately query-only. `IRepositoryFactory` in the same directory also constrains the repositories it hands out to this interface. If it were removed, the Hibernate layer and the factory contract would both lose their base contract.
+This file is part of the `DataAccessLayer` contract project, which contains only abstractions: `IRepository<TKey>`, `IEntity<TKey>`, `Entity<TKey>`, `IRepositoryFactory`, `IUnitOfWork`, and the `SortOrder` enum. It is the central query contract of that project.
 
-Note the split in responsibilities: `IRepository<TKey>` covers reading, while `IHibernateRepository<TKey>` adds `Save<TEntity>` and `UnitOfWork`. Code that only reads entities can depend on `IRepository<TKey>` alone.
+`IRepository<TKey>` is generic over the identity key type and is constrained `where TKey : struct`. Every concrete repository in the codebase works with an `int` key (through `IHibernateRepository<int>`), so in practice `TKey` is always `int`. The generic parameter exists so the contract does not hard-code that assumption.
+
+If this interface were removed, `IHibernateRepository<TKey>` (in `DataAccessLayer.Hibernate`) would have nothing to extend, and all business-layer query calls typed against `IRepository<TKey>` would lose their contract. The abstraction that lets `BusinessLayer` stay NHibernate-free is defined right here.
 
 ### Relationships
 
-- **`IEntity<TKey>`** (same directory, `DataAccessLayer/IEntity.cs`): the marker interface every entity must implement — a single `TKey Id { get; }` property. Every method here constrains `TEntity` to `class, IEntity<TKey>` on top of it.
-- **`DataAccessLayer.Hibernate.HibernateRepository<TKey>`**: the concrete implementation, reached through `IHibernateRepository<TKey>`, which adds `IDisposable` plus `Save` and `UnitOfWork` to this contract.
-- **`DataAccessLayer.Hibernate.HibernateRepositoryFactory<TKey>`** and **`IRepositoryFactory`**: factories that produce repositories bound to this contract.
-- **Callers**: `BusinessLayer/IRepositoryFactory.cs` wires `IHibernateRepositoryFactory<int>`, so the business layer is the layer that consumes repositories created from this contract.
+- **`IEntity<TKey>`** (same project, `DataAccessLayer/IEntity.cs`): the marker interface a single `TKey Id { get; }` property. Every method on `IRepository<TKey>` constrains `TEntity : class, IEntity<TKey>`, so only entity types carrying a matching identity can be queried. Note there are no `TKey`-typed parameters on any member — `TKey` flows exclusively through `TEntity`'s `Id`.
+- **`IHibernateRepository<TKey>`** (`DataAccessLayer.Hibernate/IHibernateRepository.cs`): the NHibernate-specific contract. It extends both `IDisposable` and `IRepository<TKey>`, adding write/transaction capabilities (`Save<TEntity>`, a `UnitOfWork` property) on top of this read-only surface.
+- **`HibernateRepository<TKey>`** (`DataAccessLayer.Hibernate/HibernateRepository.cs`): the concrete implementation, created by `HibernateRepositoryFactory<TKey>` over an `IStatelessSession`. It implements every member of this interface against NHibernate's LINQ provider (`session.Query<TEntity>()`).
+- **Callers**: business services never name this interface directly in most cases — they go through `IRepositoryFactory` (`BusinessLayer/IRepositoryFactory.cs`), which returns `IHibernateRepository<int>` (and therefore `IRepository<int>`). `BusinessLayer/UserService` is the representative caller: it does `using var repository = _repositoryFactory.Create();` per operation and then calls `repository.GetQueryable<User>()`.
 
 ### Behavior & Details
 
-The generic parameter `TKey` (constrained to `struct`) is the identifier type for entities stored in this repository. The `in` (contravariant) variance declaration is unusual for an interface with no parameter-only positions; in practice it restricts assignability rather than adding flexibility, so do not rely on variance when substituting `TKey` types.
+All seven members are constrained identically — `where TEntity : class, IEntity<TKey>` — and all are query methods with no side effects at the contract level. The variance modifier `in TKey` makes the interface contravariant in its key, matching how it is meant to be substituted.
 
-All seven members are constrained the same way: `TEntity : class, IEntity<TKey>`. There are no `TKey`-typed parameters on any member — `TKey` only flows through `TEntity`'s `Id`.
+The members fall into three shapes:
 
-The methods group into three patterns:
+- **`IQueryable<TEntity>` access** — the most flexible surface:
+  - `GetQueryable<TEntity>()` — the full, unfiltered queryable for the entity type. Callers can apply any LINQ (`Where`, `Select`, `OrderBy`, `ToListAsync`, etc.).
+  - `GetQueryable<TEntity>(Expression<Func<TEntity, bool>> predicate)` — the same, pre-filtered by a predicate.
+- **Materialized single results**:
+  - `Single<TEntity>(criteria)` — exactly one match; per LINQ semantics it throws if zero or more than one entity matches.
+  - `SingleOrDefault<TEntity>(criteria)` — zero or one match; returns `null` if none.
+  - `FindOne<TEntity>(criteria)` — effectively `FirstOrDefault`: returns the first match or `null`, and does **not** throw if more than one entity matches. This is the semantic difference between `FindOne` and `Single`/`SingleOrDefault`.
+- **Materialized collections**:
+  - `Find<TEntity>(criteria)` — all entities matching the predicate.
+  - `GetAll<TEntity>()` — every entity of that type.
 
-- **Deferred queryables** — `GetQueryable<TEntity>(Expression<Func<TEntity, bool>> predicate)` and the parameterless `GetQueryable<TEntity>()`. These return `IQueryable<TEntity>`, so the expression tree is not evaluated at the call site; the consuming context (an active session in the Hibernate implementation) executes the query when it is enumerated or passed on to further LINQ operations. This is the escape hatch for callers who need to compose additional queries.
-- **Single-result lookups** — `Single<TEntity>(criteria)`, `SingleOrDefault<TEntity>(criteria)`, and `FindOne<TEntity>(criteria)`. `Single` and `SingleOrDefault` follow the standard LINQ naming: `Single` returns `TEntity` (and throws if zero or more than one match), `SingleOrDefault` returns `TEntity?` (nullable, so it can represent "no match"). `FindOne` is a sibling of the same idea, also returning `TEntity?` — its distinction from `SingleOrDefault` is not encoded in the contract and lives in whichever implementation and calling convention the codebase uses.
-- **Collection results** — `Find<TEntity>(criteria)` and `GetAll<TEntity>()`, both returning `IEnumerable<TEntity>`. `GetAll` has no predicate; `Find` narrows by expression.
+Because `Single` and `FindOne` return `TEntity?` while `Single` returns `TEntity` (non-nullable in signature), a caller using `FindOne` or `SingleOrDefault` must be prepared for `null`.
 
-Because the return types for `Find`, `GetAll`, and the `GetQueryable` overloads are `IQueryable`/`IEnumerable` rather than concrete lists, the interface does not commit to eager vs. deferred execution at this level — that depends on the implementation (the Hibernate-backed one) and on how the caller enumerates the result.
-
-A few caveats worth knowing before you implement or extend this:
-
-- No `IDisposable` here. `IHibernateRepository<TKey>` adds it, so code that holds a repository directly against `IRepository<TKey>` cannot dispose it — disposal is an `IHibernateRepository` concern.
-- `TKey` is contravariant (`in`) despite never appearing in a parameter position. This is legal but almost certainly unintentional; treat it as if there were no variance modifier.
-- `Single`/`SingleOrDefault`/`FindOne` overlap heavily; pick whichever name your implementation actually differentiates, rather than assuming the LINQ semantics for all three.
+There are no async members on this interface, and no ordering/sorting parameter (the project's `SortOrder` enum is not referenced here) — callers needing ordered results compose `OrderBy` on the `IQueryable` they obtain from `GetQueryable`.
 
 ### Rough edges
 
-- The `in` variance on `TKey` is unearned (no input positions) and may mislead readers about substitutability.
-- `FindOne` and `SingleOrDefault` have near-identical signatures, and the interface gives no signal of how they differ in behaviour.
-- No write path and no lifecycle (`IDisposable`) are part of this contract — a consumer holding only `IRepository<TKey>` cannot save or release resources; both live one layer down in `IHibernateRepository<TKey>`.
+- `Find` and `FindOne` overlap in purpose with `GetQueryable(predicate)` and `GetQueryable(predicate).FirstOrDefault()`; the only difference is that the `Find*` methods return `IEnumerable`/materialized values rather than a queryable. The near-synonymous names (`FindOne` vs `SingleOrDefault` vs `Single`) can mislead a caller about multiplicity behavior — only `Single` enforces "exactly one."

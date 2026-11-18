@@ -1,22 +1,19 @@
+# `UserManagement/Design/DesignAddUserViewModel.cs`
+
 ### Purpose
 
-`UserManagement/Design/DesignAddUserViewModel.cs`
-
-`DesignAddUserViewModel` exists so the "add user" form renders with plausible sample content in a designer or preview tool. It subclasses the real `AddUserViewModel` and overrides only the constructor to pre-fill `FirstName` and `LastName` with `"Sample"` and `"User"`. This is a WPF design-time stub, not runtime application code.
+`DesignAddUserViewModel` exists so the "add user" form has plausible content to render in the WPF XAML designer. It subclasses the runtime `AddUserViewModel` and pre-fills `FirstName` with `"Sample"` and `LastName` with `"User"`, so the form's text boxes appear populated rather than empty when the designer loads the view. It contains no other logic.
 
 ### Role in the Codebase
 
-It lives in the `UserManagement/Design/` folder alongside `DesignShowUsersViewModel` and `DesignUserViewModel`, a sibling design-time stub for each of the real view models in `UserManagement/ViewModel/`. Its parent `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`) is a partial class; the XAML designer generates a second partial for design purposes, and this subclass is what the designer instantiates in place of it.
-
-The sole consumer is the XAML designer itself. `WpfApp1/View/UserView.xaml` designates `DesignUserViewModel` via `d:DesignInstance`, and `DesignUserViewModel`'s constructor constructs a `DesignAddUserViewModel` for its `AddUserViewModel` property. At runtime nothing instantiates this class.
+One of three designer-only view models in `UserManagement/Design/` (alongside `DesignUserViewModel` and `DesignShowUsersViewModel`). The class is marked `partial` but no generated designer partial exists for it, so the constructor shown here is its complete implementation. Nothing at runtime references it: the runtime container exports `AddUserViewModel` via `[Export(typeof(IAddUserViewModel))]`, and the designer path never goes through the container. If it were removed, the add-user region of the designer preview would show empty fields; runtime behaviour would be unaffected.
 
 ### Relationships
 
-- Inherits `AddUserViewModel` from `UserManagement/ViewModel/AddUserViewModel.cs`, which in turn extends `ValidatableViewModelBase<IUser>` and exports `IAddUserViewModel`. `DesignAddUserViewModel` adds no members beyond the constructor, so it inherits all behavior: the `FirstName`/`LastName` observable properties, validation, and `SaveUserAsync`.
-- Used only by `DesignUserViewModel` (same folder), which sets it as the `AddUserViewModel` property when the designer builds the view hierarchy.
+- **Base class:** `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`), itself a `ValidatableViewModelBase<IUser>` with `[ObservableProperty]`-generated `FirstName`/`LastName` properties, an `IUserService` import, and a `SaveUserCommand`. `DesignAddUserViewModel` overrides nothing — it only assigns to the inherited properties in its constructor.
+- **Sole constructor:** `DesignUserViewModel` (`UserManagement/Design/DesignUserViewModel.cs`) sets `AddUserViewModel = new DesignAddUserViewModel()`.
+- **Design-time chain:** `WpfApp1/View/UserView.xaml` declares `d:DataContext="{d:DesignInstance Type=design:DesignUserViewModel, ...}"`, so the designer constructs `DesignUserViewModel`, which in turn constructs this class.
 
 ### Behavior & Details
 
-The constructor sets the two inherited properties to non-empty values so the text fields are visibly populated and the inherited `SaveUserCommand` appears executable in the designer. Because these assignments go through the inherited property setters, `OnFirstNameChanged`/`OnLastNameChanged` run and call `ValidateProperty`; the constructor does not touch the injected `UserService`, `LoggingService`, or `MessageService`, which remain null (`null!`) and are only ever used inside `SaveUserAsync` — which the designer does not invoke.
-
-One caveat: `IsDesignTimeCreatable=True` in `UserView.xaml` only guarantees constructability, not safety. If any designer action ever executes `SaveUserAsync`, the null-injected services would throw — but a plain designer preview only builds the object graph and binds properties, so this never happens in practice.
+The single constructor assigns two string literals to inherited observable properties. Because those properties are `[ObservableProperty]`-generated, the assignments also trigger the base class's `OnFirstNameChanged`/`OnLastNameChanged` handlers, which call `ValidateProperty`. That validation runs against a `UserValidator` and `HasErrors`, so it is worth knowing the sample values ("Sample"/"User") pass validation — otherwise the designer would display validation error adornments. No commands, services, or logging are touched here; the `[Import]` services on the base class remain null in this design-time instance, which is fine because nothing calls them from the designer.

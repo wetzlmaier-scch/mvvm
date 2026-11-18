@@ -1,44 +1,38 @@
 ### Purpose
 
-The `UserManagement/Messaging` directory defines the event contract for user changes within the module. It contains two files that work together to allow view models to communicate user state changes (add, update, delete) to other parts of the application without direct dependencies.
-
-These files belong together because they form the minimal data structure required for this communication: the message payload and the enum that classifies the type of change.
+The `UserManagement/Messaging` directory defines the event contract for the UserManagement module. It contains the types required to announce user changes between view models without requiring them to reference each other directly. By isolating the message definition and the change classification here, the directory acts as a shared vocabulary for the communication layer, ensuring that senders and receivers agree on the structure of user state updates.
 
 ### Software Components
 
-The directory consists of two tightly coupled components:
+This directory consists of two tightly coupled source files that form the complete messaging payload:
 
-- **`UserChangedMessage`** ([UserChangedMessage.cs](UserManagement/Messaging/UserChangedMessage.md)): This is the message class that travels through the system. It extends `ValueChangedMessage<UserModel>` from the CommunityToolkit.Mvvm library to carry a specific `UserModel` instance. It adds a `UserChangeType` property to specify what operation occurred. It provides two constructors: one that accepts both the type and the user, and a convenience constructor that defaults to `Added` if only a user is provided.
-- **`UserChangeType`** ([UserChangeType.cs](UserManagement/Messaging/UserChangeType.md)): This enum defines the three possible operations: `Added`, `Updated`, and `Deleted`. It serves as the discriminator within the message, allowing recipients to determine how to handle the event.
+*   **`UserChangeType.cs`**: Defines the [UserChangeType](UserManagement/Messaging/UserChangeType.md) enum. This classifies the nature of the event as `Added`, `Updated`, or `Deleted`. It serves as the discriminator field within the message, allowing recipients to apply specific logic based on what happened to the user.
+*   **`UserChangedMessage.cs`**: Defines the [UserChangedMessage](UserManagement/Messaging/UserChangedMessage.md) class. This is the concrete message payload dispatched via `WeakReferenceMessenger`. It extends `ValueChangedMessage<UserModel>` from the CommunityToolkit.Mvvm library and includes a `UserChangeType` property to carry the classification alongside the user data.
 
 ### Relationships
 
-The relationship between the two files is direct and mandatory. `UserChangedMessage` cannot exist or function without `UserChangeType`, as it uses the enum to define the nature of the event it carries.
-
-External components interact with this directory as follows:
-- **Senders**: `AddUserViewModel` creates an instance of `UserChangedMessage` with `UserChangeType.Added` and sends it via `WeakReferenceMessenger` after a successful user creation.
-- **Receivers**: `ShowUsersViewModel` registers to listen for `UserChangedMessage`. It inspects the `UserChangeType` to decide how to update its UI. Currently, it only handles `Added` events, appending the new user to its collection. It throws a `NotImplementedException` for `Updated` and `Deleted` events.
+The two files in this directory are interdependent; `UserChangedMessage` cannot exist without `UserChangeType`, as the latter is a required constructor parameter and property of the former. Together, they define the "what" of the communication. The "who" and "when" are handled outside this directory by the ViewModels. Specifically, `AddUserViewModel` (in `UserManagement/ViewModel/`) constructs and sends these messages, while `ShowUsersViewModel` (also in `UserManagement/ViewModel/`) registers for and consumes them. The dependency flows outward from this directory: the ViewModels depend on these types, but these types do not depend on the ViewModels.
 
 ```mermaid
 flowchart TD
     subgraph "UserManagement/Messaging"
-        M[UserChangedMessage]
-        T[UserChangeType]
+        UCT[UserChangeType]
+        UCM[UserChangedMessage]
+    end
+    
+    subgraph "UserManagement/ViewModel"
+        AUVM[AddUserViewModel]
+        SUVM[ShowUsersViewModel]
     end
 
-    subgraph "External ViewModels"
-        Sender[AddUserViewModel]
-        Receiver[ShowUsersViewModel]
-    end
-
-    Sender -->|Creates and Sends| M
-    Receiver -->|Registers and Handles| M
-    M -->|Contains| T
+    UCM -->|uses| UCT
+    AUVM -->|creates/sends| UCM
+    SUVM -->|registers/consumes| UCM
 ```
 
 ### Rough edges
 
-The `UserChangeType` enum defines `Updated` and `Deleted` states, but the current implementation does not support them end-to-end. `ShowUsersViewModel` explicitly throws an exception for these types, and no code currently sends them, meaning these enum values are effectively unused placeholders.
+Currently, only the `Added` state of `UserChangeType` is fully implemented end-to-end. While the enum defines `Updated` and `Deleted`, and `UserChangedMessage` can carry them, the consuming `ShowUsersViewModel` throws a `NotImplementedException` for these cases. Consequently, these two enum values are part of the contract but effectively dead code, as sending them would crash the recipient.
 
 ## Contents
 - [UserChangeType.cs](UserManagement/Messaging/UserChangeType.md)

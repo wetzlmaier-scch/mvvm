@@ -1,57 +1,33 @@
-# DataAccessLayer/IUnitOfWork.cs
+# `DataAccessLayer/IUnitOfWork.cs`
 
-## Purpose
+### Purpose
 
-`IUnitOfWork` is the provider-agnostic contract for managing database transactions in this codebase. It exists so that business logic (e.g., `UserService` in `BusinessLayer/`) can begin, commit, and roll back transactions without knowing which ORM or data access implementation is actually being used.
+`IUnitOfWork` is the provider-agnostic contract for managing database transactions. It lets callers begin, commit, and roll back a transaction without knowing which ORM is doing the actual work, so business logic can treat a sequence of data operations as an atomic unit. The file is part of `DataAccessLayer`, the project that holds the data-access abstractions with no logic of their own.
 
-## Role in the Codebase
+### Role in the Codebase
 
-This file sits in the `DataAccessLayer` directory alongside other abstraction interfaces (`IRepository<TKey>`, `IRepositoryFactory`). It defines the transactional "unit" boundary for all data access: a caller starts a transaction, performs one or more repository operations, then commits or rolls back as a single atomic unit.
+This interface is the transaction half of the `DataAccessLayer` contract set, alongside the read-oriented `IRepository<TKey>`, the `IRepositoryFactory`, and the entity types. It carries no implementation — it defines only the lifecycle a unit of work must support. If it were removed, the concrete NHibernate layer would lose its base contract: `IHibernateUnitOfWork` in `DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs` extends it directly, and `HibernateUnitOfWork` implements it.
 
-The concrete implementation is `HibernateUnitOfWork` (in `DataAccessLayer.Hibernate/`), which wraps an NHibernate `IStatelessSession`. A thinner sub-interface, `IHibernateUnitOfWork`, extends `IUnitOfWork` to add an overload of `BeginTransaction` that accepts an explicit `IsolationLevel`.
+### Relationships
 
-If this interface were removed, there would be no provider-agnostic way to express transactional boundaries, and callers would be forced to depend on the NHibernate-specific implementation directly.
+- **`System.IDisposable`** (standard .NET): `IUnitOfWork` extends it, so a unit of work is expected to release its underlying session/transaction resources when disposed.
+- **`IHibernateUnitOfWork`** (`DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs`): extends this interface and adds one member, `BeginTransaction(IsolationLevel)`, for isolation levels beyond the base contract.
+- **`HibernateUnitOfWork`** (`DataAccessLayer.Hibernate/HibernateUnitOfWork.cs`): the concrete class that implements all of this interface's members, wrapping an NHibernate `IStatelessSession`.
+- **Callers**: repositories expose the unit of work — `IHibernateRepository` has a `UnitOfWork` property — and business services use it. For example, `BusinessLayer/UserService.cs` (`AddUser`) calls `repository.UnitOfWork.BeginTransaction()`, commits on success, and rolls back on failure.
 
-## Relationships
+### Behavior & Details
 
-- **Inherited by:** `IHibernateUnitOfWork` (DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs) — adds `BeginTransaction(IsolationLevel isolationLevel)`.
-- **Implemented by:** `HibernateUnitOfWork` (DataAccessLayer.Hibernate/HibernateUnitOfWork.cs) — the only concrete implementation in the repository.
-- **Exposed through:** `IHibernateRepository.UnitOfWork` property, which returns an `IHibernateUnitOfWork`.
-- **Consumed by:** `UserService` (BusinessLayer/UserService.cs) calls `repository.UnitOfWork.BeginTransaction()`, `CommitTransaction()`, and `RollBackTransaction()` to wrap user-save operations in a transaction.
+The contract has exactly four members, and they define a simple state machine:
 
-`IUnitOfWork` itself extends `System.IDisposable` (standard .NET), so a unit of work is expected to release its underlying session/transaction resources when disposed.
+- **`bool IsInTransaction { get; }`** — reports whether a transaction is currently open.
+- **`BeginTransaction()`** — opens a transaction. The implementation (`HibernateUnitOfWork`) starts with `ReadCommitted` isolation and throws `InvalidOperationException` if a transaction is already running, so at most one transaction is active at a time.
+- **`CommitTransaction()`** — makes the open transaction permanent. The implementation throws `InvalidOperationException` if no transaction is running, and rolls back before rethrowing if the commit itself fails.
+- **`RollBackTransaction()`** — discards the open transaction; also throws `InvalidOperationException` when there is no transaction to roll back.
 
-## Behavior & Details
+Because the interface is provider-neutral, it intentionally says nothing about isolation levels — that is where the thinner `IHibernateUnitOfWork` extension comes in. Callers program against `IUnitOfWork` for the default behaviour and against `IHibernateUnitOfWork` when they need to choose an isolation level.
 
-The interface declares four members:
-
-| Member | Contract |
-|---|---|
-| `bool IsInTransaction { get; }` | Read-only flag: `true` when a transaction has been opened and not yet committed or rolled back. |
-| `void BeginTransaction()` | Opens a new transaction. The `HibernateUnitOfWork` implementation starts with `IsolationLevel.ReadCommitted` by default and throws `InvalidOperationException` if a transaction is already open. |
-| `void CommitTransaction()` | Commits the open transaction. Throws `InvalidOperationException` if no transaction is active. On failure, the implementation rolls back before rethrowing. |
-| `void RollBackTransaction()` | Rolls back the open transaction. Throws `InvalidOperationException` if no transaction is active. |
-
-### Typical usage pattern
-
-```csharp
-using var repository = _repositoryFactory.Create();
-repository.UnitOfWork.BeginTransaction();
-try
-{
-    await repository.Save(entity);
-    repository.UnitOfWork.CommitTransaction();
-}
-catch
-{
-    repository.UnitOfWork.RollBackTransaction();
-    throw;
-}
-```
-
-Callers (such as `UserService.AddUser`) are responsible for the try/catch and for deciding whether to rethrow or wrap the exception. The unit of work itself does not swallow errors.
+The standard usage pattern visible in the callers is: begin, do the work, commit; on any exception, roll back and let the caller handle the error.
 
 ### Rough edges
 
-- The `CommitTransaction` failure path in `HibernateUnitOfWork` calls `RollBackTransaction()`, but if that rollback also throws, the original exception is lost (the rollback exception propagates instead). This is an implementation detail outside this interface, but it is relevant to anyone relying on the "commit or throw" contract.
-- `Dispose` on `HibernateUnitOfWork` sets `_isDisposed = true` only when a transaction existed at disposal time, which means calling `Dispose` twice with no transaction open leaves the flag unset. Again, this lives in the implementation, not the contract.
+- The interface has no way to express an isolation level, so any provider-specific extension has to add its own `BeginTransaction(IsolationLevel)` overload; there is no shared place for that in the base contract.

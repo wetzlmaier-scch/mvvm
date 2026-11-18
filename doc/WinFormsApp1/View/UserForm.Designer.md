@@ -1,27 +1,31 @@
-# WinFormsApp1/View/UserForm.Designer.cs
-
 ### Purpose
 
-This file is the WinForms designer-generated half of `UserForm` — the main window of a user-management application. It declares the form's nine controls and lays them out in `InitializeComponent()`: a "Current Users" group holding the `lstUsers` list box on the left, and an "Add New User" group on the right with `txtFirstName`, `txtLastName`, `btnSave`, and their labels, plus an `ErrorProvider` for validation tooltips. It contains no business logic; all behaviour lives in the hand-written partial class `UserForm.cs`.
+`WinFormsApp1/View/UserForm.Designer.cs` is the auto-generated half of the `UserForm` Windows Forms class. It contains no business logic of its own — it is the layout half of a split-class pattern the Visual Studio designer uses: this file instantiates and positions the form's controls, while the hand-written `UserForm.cs` wires them up to the view model.
 
 ### Role in the codebase
 
-`WinFormsApp1` is an MVC-style WinForms app where `View/UserForm.cs` + this file + `UserForm.resx` together compose the single window shown by `DefaultModuleController`. That controller imports `UserForm` via the `[Export(typeof(IMainView<DialogResult, int>))]` attribute in `UserForm.cs`, sets its `DataContext` to `IMainViewModel`, and calls `Application.Run` on it. Remove this file and `UserForm` no longer compiles — its constructor calls `InitializeComponent()`, and `UserForm.cs` references controls (`txtFirstName`, `lstUsers`, `errorProvider`, etc.) whose fields are declared here.
+This file is a `partial class UserForm` declaration that pairs with `WinFormsApp1/View/UserForm.cs`. The two files together form one `Form`-derived class that implements `IMainView<DialogResult, int>` (a WinForms/MVVM shell view, exported via MEF with `[Export(typeof(IMainView<DialogResult, int>))]`). The View folder holds only these two files.
+
+The form's business purpose, per the paired code-behind, is user management: a list box showing current users on the left, and an "Add New User" panel with first/last name fields and a Save button on the right.
+
+`InitializeComponent()` is called from the constructor in `UserForm.cs`, so the form cannot display any controls without this file. The form text is set to `"Form1"` — the designer's default, never updated.
 
 ### Relationships
 
-- **`UserForm.cs`** (same directory): the other half of this partial class. It wires up data bindings, event handlers, and `ErrorProvider` usage against the fields and `InitializeComponent()` defined here.
-- **`Mvvm`** (external project referenced from `UserForm.cs`): supplies the `Mvvm.Form` base class, so the inherited members (`DataContext`, `Dispose(bool)`, the form plumbing) come from there, not from this file.
-- **`UserManagement.Model` / `UserManagement.ViewModel`**: the view model types bound to the controls in `UserForm.cs`; this file only names the controls those bindings target.
-- **`UserForm.resx`**: satellite resource file for the form, generated alongside this one.
+- **`UserForm.cs`** (same directory): the other half of the `partial class`. It declares the class's base (`Form`), its `IMainView<DialogResult, int>` implementation, and `SetupBindings(...)`, which is where every control declared here gets behaviour:
+  - `txtFirstName` / `txtLastName` — `DataBindings` to `AddUserViewModel.FirstName` / `.LastName` with `DataSourceUpdateMode.OnPropertyChanged`.
+  - `lstUsers` — bound through a `BindingSource` to `ShowUsersViewModel.Users`, with a `Format` handler rendering `"First Last"`.
+  - `errorProvider` — fed from `AddUserViewModel.ErrorsChanged` to show validation messages next to the name fields.
+  - `btnSave` — its `Click` executes `AddUserViewModel.SaveUserCommand`.
+- Because `UserForm` is MEF-exported as `IMainView<DialogResult, int>`, the form is instantiated by the application's composition container, not by direct `new` calls from other code.
 
 ### Behavior & Details
 
-- The class is `partial` and `internal` to the `WinFormsApp1.View` namespace, extending the `Mvvm`-library `Form` base. The only logic in this file is the `Dispose(bool)` override, which disposes the `IContainer components` field when `disposing` is true — the standard pattern so the `ErrorProvider` (the only component created with a container) is released cleanly.
-- `InitializeComponent()` instantiates each control, sets its static properties (positions, sizes, tab order, caption text), and parents them: `lstUsers` into `groupBox1`; `btnSave`, `txtLastName`, `label2`, `txtFirstName`, `label1` into `groupBox2`; both group boxes into the form. `errorProvider.BlinkStyle` is `NeverBlink`, so validation errors show a persistent icon without blinking.
-- The control field names carry the contract `UserForm.cs` depends on: `txtFirstName`/`txtLastName` are the `FirstName`/`LastName` bindings' targets and the controls the `ErrorProvider` errors are attached to; `lstUsers` shows the user list formatted as `"FirstName LastName"`; `btnSave` triggers `SaveUserCommand`. Renaming any field in this file breaks `SetupBindings` in `UserForm.cs`.
-- Like all WinForms designer files, the contents of `InitializeComponent()` are regenerated by the Visual Studio designer — edit the form in the designer, not by hand here.
+- **`InitializeComponent()`** is the only method. It creates and positions nine controls. It must not be edited by hand — the designer regenerates it. The file also contains a boilerplate `Dispose(bool)` override that releases the `IContainer` if it is non-null.
+- **Layout**, fixed pixel coordinates with `AutoScaleMode.Font`:
+  - `groupBox1` ("Current Users", at 25,27, 329×345) contains `lstUsers`.
+  - `groupBox2` ("Add New User", at 388,27, 346×345) contains `label1`/`txtFirstName` ("First Name"), `label2`/`txtLastName` ("Last Name"), and `btnSave` ("Save").
+- **`errorProvider`** is created with the shared `components` container and set to `ErrorBlinkStyle.NeverBlink` — validation errors appear as a static icon/tooltip, not a blinking one.
+- No control is given an event handler in this file; all behaviour is attached in `SetupBindings` in the code-behind.
 
-### Rough edges
-
-- The form's `Text` is still the default `"Form1"`, so the window's title bar never reflects that it is the user-management form.
+Rough edges: the form's title remains the designer default `Text = "Form1"` rather than a descriptive caption.

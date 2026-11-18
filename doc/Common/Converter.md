@@ -1,28 +1,30 @@
 ### Purpose
 
-The `Common/Converter` directory contains diagnostic tools for WPF data binding. Specifically, it holds the [DebugConverter.cs](Common/Converter/DebugConverter.md) class, which helps developers inspect values flowing through bindings during debugging. Its sole purpose is to act as a temporary break-point proxy within the view layer.
+The `Common/Converter` directory contains diagnostic tools for WPF data binding. It currently houses a single utility, `DebugConverter`, designed to help developers inspect values during the binding process.
 
 ### Software Components
 
-This directory contains a single source code component: the `DebugConverter` class. It implements the `IValueConverter` interface, allowing it to be instantiated directly in XAML. The class overrides `Convert` to log the incoming value and target type, then triggers a debugger break. The `ConvertBack` method simply passes the value through without side effects. It is not a production converter; both directions eventually return the original value unchanged.
+This directory consists of one source file: `DebugConverter.cs`.
+
+[DebugConverter](Common/Converter/DebugConverter.md) is a class implementing the `IValueConverter` interface. Its primary function is to act as a debugging hook: when a binding uses this converter, the `Convert` method logs the value, target type, and parameter to the debug output and triggers `Debugger.Break()`. The value itself passes through unchanged, allowing the UI to function normally while the developer inspects the state in the debugger.
 
 ### Relationships
 
-`DebugConverter` sits between the view's XAML markup and the underlying data source. It is referenced by static resource keys in WPF views (such as `WpfApp1/View/UserView.xaml`) rather than being called programmatically. There are no internal dependencies within this directory. Externally, it depends on `System.Windows.Data` for the interface and `System.Diagnostics` for the logging and break functionality. It does not depend on other files in this folder.
+`DebugConverter` is shared infrastructure living in the `Common` assembly, making it available to all views in the application. It is referenced as a static resource in XAML files, such as `WpfApp1/View/UserView.xaml`.
+
+Currently, no active bindings rely on `DebugConverter` at runtime. In `UserView.xaml`, the resource is declared but the specific `TextBox` binding that uses it is commented out. Therefore, the class is effectively dormant code until a developer manually attaches it to a binding to troubleshoot a specific issue.
 
 ```mermaid
 flowchart TD
-    subgraph "Common/Converter"
-        DC["DebugConverter"]
+    subgraph "Common Assembly"
+        DC[DebugConverter.cs]
     end
     
-    subgraph "WPF Framework"
-        IVC["IValueConverter"]
-        Diag["System.Diagnostics"]
+    subgraph "WPF Views"
+        XV[XAML Views<br>e.g. UserView.xaml]
     end
 
-    DC -.implements.-> IVC
-    DC -->|calls| Diag
+    XV -->|References via StaticResource| DC
 ```
 
 ## Contents

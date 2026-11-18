@@ -1,53 +1,47 @@
 ### Purpose
 
-The `Logging` directory is a .NET class library that provides a unified logging facade for the application. It wraps the `Microsoft.Extensions.Logging` infrastructure and Serilog to expose a simpler, level-specific API for other parts of the codebase. The files belong together because they define the contract (`ILoggingService`) and the concrete implementation (`LoggingService`) that consumers depend on for diagnostic output.
+The `Logging` directory contains the application's logging abstraction, consisting of an interface definition and its concrete implementation. It provides a unified, MEF-composable facade that wraps Serilog, allowing business logic and view models to log without directly interacting with the underlying logging framework. These files belong together because they define the contract (`ILoggingService`) and the single runtime provider (`LoggingService`) for that contract, isolating the rest of the codebase from the specifics of Serilog configuration and sink management.
 
 ### Software Components
 
-The directory contains two main source code components:
+The directory contains two source code files that form a classic interface-implementation pair.
 
-*   **`ILoggingService`**: This is the primary interface for logging operations. It extends `Microsoft.Extensions.Logging.ILogger` and adds convenience methods for each log level (e.g., `LogInformation`, `LogError`). These methods allow callers to log messages, exceptions, and event IDs without manually constructing the generic `ILogger` calls. [ILoggingService.cs](Logging/ILoggingService.md) defines this contract.
-*   **`LoggingService`**: This is the concrete implementation of `ILoggingService`. It uses Serilog as the underlying logging engine, configuring sinks for file output (daily rolling files) and the debug console. It is marked with the MEF `[Export(typeof(ILoggingService))]` attribute, which enables it to be injected into consumer classes via dependency injection. [LoggingService.cs](Logging/LoggingService.md) contains this implementation.
+`Logging/ILoggingService.cs` defines the [ILoggingService](Logging/ILoggingService.md) interface. This interface extends `Microsoft.Extensions.Logging.ILogger` but adds a layer of convenience by introducing string-based overloads for each log level (Debug, Trace, Information, Warning, Error, Critical). It simplifies call sites by allowing developers to pass formatted strings and exception objects directly, rather than dealing with the complex `TState` and formatter delegates required by the base framework interface.
 
-The [Logging.csproj](Logging/Logging.md) file defines the build settings for this assembly, targeting `net10.0` and referencing the necessary Serilog and Microsoft.Extensions.Logging packages.
+`Logging/LoggingService.cs` contains the [LoggingService](Logging/LoggingService.md) class, which is the sole implementation of `ILoggingService`. This class is responsible for initializing the Serilog logger instance within its field initializer, configuring enrichers, sinks (file and debug window), and minimum log levels. It marks the class with `[Export(typeof(ILoggingService))]` to register it with the MEF composition container. All logging methods within this class are thin delegates that forward calls to the internal Serilog-backed `ILogger` instance.
 
 ### Relationships
 
-The `Logging` library acts as a dependency for the `BusinessLayer` and `UserManagement` projects. These projects reference `Logging.csproj` and inject `ILoggingService` into their services and view models. The dependency flows strictly inward: consumers rely on the `ILoggingService` contract, while `LoggingService` relies on Serilog and Microsoft.Extensions.Logging packages.
-
-Because `LoggingService` is exported via MEF, any class declaring an `ILoggingService` property will automatically receive the Serilog-backed implementation at runtime. This means that changing the logging configuration (e.g., log levels or file paths) requires modifying `LoggingService.cs` directly, as there is no external configuration file driving these settings.
+The relationship between these two files is a direct dependency: `LoggingService` implements `ILoggingService`. The rest of the application (such as `BusinessLayer` and `UserManagement`) depends only on the `ILoggingService` interface, receiving the `LoggingService` instance via MEF injection. This decoupling ensures that if the underlying logging engine changes, only `LoggingService` needs to be modified, while the interface contract remains stable for consumers.
 
 ```mermaid
-flowchart TD
-    subgraph "Logging Directory"
-        ILog[ILoggingService]
-        LS[LoggingService]
-        CSProj[Logging.csproj]
-    end
-
-    subgraph "External Consumers"
-        BL[BusinessLayer]
-        UM[UserManagement]
-    end
-
-    subgraph "External Dependencies"
-        MEL[Microsoft.Extensions.Logging]
-        SER[Serilog]
-        MEF[System.ComponentModel.Composition]
-    end
-
-    BL -->|Project Reference| CSProj
-    UM -->|Project Reference| CSProj
-    BL -->|Uses| ILog
-    UM -->|Uses| ILog
+classDiagram
+    class ILoggingService {
+        +LogDebug(message)
+        +LogError(exception, message)
+        +Log(LogLevel, message)
+    }
+    class LoggingService {
+        -ILogger _logger
+        +LogDebug(message)
+        +LogError(exception, message)
+    }
+    class ILogger {
+        <<external>>
+        +Log<TState>()
+    }
     
-    LS -->|Implements| ILog
-    LS -->|Uses| SER
-    ILog -->|Extends| MEL
-    LS -->|Decorated with| MEF
+    ILoggingService ..|> ILogger : extends
+    LoggingService ..|> ILoggingService : implements
+    LoggingService --> ILogger : wraps
 ```
+
+### Rough edges
+
+*   `ShowUsersViewModel` imports `ILoggingService` but never actually invokes any logging methods, resulting in a dead dependency.
+*   The `LogTrace` methods are defined in the interface and implemented in `LoggingService`, but the Serilog configuration sets the minimum level to `Debug`, meaning all `Trace` logs are silently discarded at runtime.
+*   The `CategoryName` enricher in `LoggingService` is configured with an empty string, so the `{CategoryName}` placeholder in the debug sink output always renders as blank, adding noise without providing diagnostic value.
 
 ## Contents
 - [ILoggingService.cs](Logging/ILoggingService.md)
-- [Logging.csproj](Logging/Logging.md)
 - [LoggingService.cs](Logging/LoggingService.md)

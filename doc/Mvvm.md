@@ -1,105 +1,98 @@
 ### Purpose
 
-The `Mvvm` project serves as the framework-agnostic core of the application's MVVM architecture. It provides the abstract base classes, interfaces, and shared types that define how ViewModels behave, how Views connect to them, and how application modules communicate with the user interface.
-
-The contents belong together because they form the contract layer between the business logic (feature modules like `UserManagement`) and the specific UI technologies (WPF or WinForms). By centralizing the `ViewModelBase` hierarchy, the `IView` contract, and the `IMessageService` abstraction here, the project ensures that feature code remains testable and UI-agnostic, while the host applications only need to implement the specific glue code for their respective frameworks.
+The `Mvvm` directory serves as the framework-agnostic core of the solution, defining the shared MVVM abstractions that allow feature modules to run across different UI hosts (WPF, WinForms, Console). It contains the root interfaces and base classes that provide observable state, view-model/view contract definition, and module lifecycle management, ensuring that business logic remains decoupled from specific UI frameworks.
 
 ### Software Components
 
-The components in this directory group into three functional layers:
+The code is organized into three primary responsibility groups:
 
-**View-Model Base Hierarchy**
-The foundation of the library is the inheritance chain starting at [ViewModelBase](Mvvm/ViewModelBase.md). It extends CommunityToolkit's `ObservableObject` to provide property change notification, design-mode detection, and a parent-child tree structure for managing nested ViewModels. Derived from this are three specialized bases:
-*   [ValidatableViewModelBase](Mvvm/ValidatableViewModelBase.md) adds support for `FluentValidation` and surfaces errors via `INotifyDataErrorInfo`.
-*   [DisposableViewModelBase](Mvvm/DisposableViewModelBase.md) implements the standard dispose pattern for ViewModels that manage unmanaged or external resources.
-*   [MainViewModelBase](Mvvm/MainViewModelBase.md) handles the lifecycle of the application's main window, including icon loading and shutdown logic.
+*   **View-Model Base Hierarchy**: This set of abstract classes provides the common infrastructure for all view models.
+    *   `ViewModelBase` is the root, extending CommunityToolkit’s `ObservableObject` to provide `INotifyPropertyChanged` support, design-mode detection, and child view-model lifecycle hooks (`OnClosing`/`OnClosed`).
+    *   [DisposableViewModelBase](Mvvm/DisposableViewModelBase.md) extends `ViewModelBase` to add deterministic disposal of `IDisposable` resources.
+    *   [MainViewModelBase](Mvvm/MainViewModelBase.md) extends `ViewModelBase` to handle main-window-specific logic, including window icon loading and close/shutdown delegation.
+    *   [ValidatableViewModelBase](Mvvm/ValidatableViewModelBase.md) extends `ViewModelBase` to integrate FluentValidation for data-binding errors.
 
-**View and ViewModel Contracts**
-The interfaces define the boundary between the model and the view:
-*   [IViewModel](Mvvm/IViewModel.md) is the root marker interface for all ViewModels, extending `INotifyPropertyChanged`.
-*   [IMainViewModel](Mvvm/IMainViewModel.md) adds window-specific controls like `CloseWindow()` and `Shutdown()` to the ViewModel contract.
-*   [IDisposableViewModel](Mvvm/IDisposableViewModel.md) marks ViewModels that must be explicitly disposed.
-*   [IView](Mvvm/IView.md) defines the minimal view contract, primarily through the `DataContext` property which serves as the binding point for the ViewModel.
-*   [IDialogView](Mvvm/IDialogView.md) and [IMainView](Mvvm/IMainView.md) extend `IView` with specific behaviors for dialogs and the main application window, respectively.
+*   **Core Contracts (Interfaces)**: These interfaces define the capabilities and roles of components without tying them to a UI framework.
+    *   [IViewModel](Mvvm/IViewModel.md) is the marker interface for all view models, inheriting from `INotifyPropertyChanged`.
+    *   [IMainViewModel](Mvvm/IMainViewModel.md) defines the contract for the main window's view model, adding window control members like `CloseWindow` and `Shutdown`.
+    *   [IDisposableViewModel](Mvvm/IDisposableViewModel.md) marks view models that own disposable resources.
+    *   [IModuleController](Mvvm/IModuleController.md) defines the lifecycle contract (`Initialize`, `Run`, `Shutdown`) for application modules.
+    *   [IView](Mvvm/IView.md), [IDialogView](Mvvm/IDialogView.md), and [IMainView](Mvvm/IMainView.md) form the view-side hierarchy, allowing controllers to drive windows generically via `DataContext`, `Show`, `Close`, and geometry properties.
 
-**Messaging and Module Lifecycle**
-*   [IMessageService](Mvvm/IMessageService.md) abstracts the UI framework's message boxes, allowing ViewModels to display warnings, errors, and questions without referencing WPF or WinForms types directly.
-*   [MessageResult](Mvvm/MessageResult.md) is an enum that standardizes the return values of user interactions (Yes/No/Cancel) across different UI frameworks.
-*   [IModuleController](Mvvm/IModuleController.md) defines the lifecycle contract (`Initialize`, `Run`, `Shutdown`) for application modules, allowing hosts to start and stop features uniformly.
+*   **Messaging Subsystem**: A platform-neutral way for view models to display dialogs.
+    *   [IMessageService](Mvvm/IMessageService.md) defines the contract for showing messages and asking questions.
+    *   [MessageResult](Mvvm/MessageResult.md) is a shared enum that maps user dialog responses, ensuring compatibility between WPF and WinForms result types.
 
 ### Relationships
 
-The dependency structure follows a strict layering: concrete application code depends on these abstractions, but these abstractions do not depend on the specific UI host. The `ViewModelBase` class is the central hub; it implements `IViewModel` and is the parent to the specialized bases. For instance, a concrete ViewModel like `UserViewModel` might derive from `MainViewModelBase` (which derives from `ViewModelBase`) and implement `IMainViewModel`.
+The `Mvvm` project acts as the central dependency for host applications (`Mvvm.Wpf`, `WinFormsApp1`) and feature modules (like `UserManagement`). The relationships within the directory follow a clear layering from abstract contracts to concrete base implementations.
 
-The messaging subsystem relies on the [MessageResult](Mvvm/MessageResult.md) enum to translate platform-specific results into a common type. The `IModuleController` interface is the entry point for the host applications (WPF/WinForms), which use MEF to discover and drive the lifecycle of these modules. The `Common` project is a dependency for `Mvvm` (specifically for `ExtendedGuard` in `ViewModelBase`), but no other external dependencies exist within the `Mvvm` project itself beyond the NuGet packages for CommunityToolkit and FluentValidation.
+The view-model hierarchy is rooted at `ViewModelBase`, which implements [IViewModel](Mvvm/IViewModel.md). The specialized base classes ([DisposableViewModelBase](Mvvm/DisposableViewModelBase.md), [MainViewModelBase](Mvvm/MainViewModelBase.md), and [ValidatableViewModelBase](Mvvm/ValidatableViewModelBase.md)) all extend this root, allowing concrete view models to opt into specific capabilities (disposal, main-window control, or validation) without inheriting irrelevant logic. [MainViewModelBase](Mvvm/MainViewModelBase.md) specifically implements [IMainViewModel](Mvvm/IMainViewModel.md) and is the only base class that interacts with `Application.Current` to manage the window lifecycle.
+
+The view interfaces follow a parallel path. [IView](Mvvm/IView.md) is the base, extended by [IDialogView](Mvvm/IDialogView.md), which is in turn extended by [IMainView](Mvvm/IMainView.md). These interfaces are consumed by [IModuleController](Mvvm/IModuleController.md) implementations in the host projects, which use them to wire up `DataContext` and control window visibility without knowing the specific UI framework.
+
+The messaging subsystem is self-contained but relies on the module system for distribution. [IMessageService](Mvvm/IMessageService.md) is the interface consumed by feature view models, while [MessageResult](Mvvm/MessageResult.md) provides the return type. The actual implementations of `IMessageService` live in the host projects (WPF, WinForms, Console), but they must return the shared `MessageResult` enum to remain compatible with the core contract.
 
 ```mermaid
 classDiagram
     class IViewModel {
         <<interface>>
-        +INotifyPropertyChanged
-    }
-    class ViewModelBase {
-        <<abstract>>
-        +IsInDesignMode bool
-        +RegisterChildViewModel()
-        +OnClosing()
-    }
-    class IMainViewModel {
-        <<interface>>
-        +Icon ImageSource
-        +CloseWindow()
-        +Shutdown()
-    }
-    class MainViewModelBase {
-        <<abstract>>
     }
     class IDisposableViewModel {
         <<interface>>
-        +IDisposable
     }
-    class DisposableViewModelBase {
-        <<abstract>>
-        +Dispose()
-    }
-    class ValidatableViewModelBase {
-        <<abstract>>
-        +HasErrors bool
-        +ValidateAllProperties()
+    class IMainViewModel {
+        <<interface>>
     }
     class IView {
         <<interface>>
-        +DataContext object
+    }
+    class IDialogView {
+        <<interface>>
+    }
+    class IMainView {
+        <<interface>>
     }
     class IModuleController {
         <<interface>>
-        +Initialize()
-        +Run()
-        +Shutdown()
     }
     class IMessageService {
         <<interface>>
-        +ShowMessage()
-        +ShowYesNoQuestion()
     }
     class MessageResult {
         <<enum>>
     }
+    class ViewModelBase {
+        <<abstract>>
+    }
+    class DisposableViewModelBase {
+        <<abstract>>
+    }
+    class MainViewModelBase {
+        <<abstract>>
+    }
+    class ValidatableViewModelBase {
+        <<abstract>>
+    }
 
-    IViewModel <|-- ViewModelBase
-    ViewModelBase <|-- MainViewModelBase
+    IViewModel <|.. IDisposableViewModel
+    IViewModel <|.. IMainViewModel
+    IView <|.. IDialogView
+    IDialogView <|.. IMainView
+    IViewModel <|.. ViewModelBase
     ViewModelBase <|-- DisposableViewModelBase
+    ViewModelBase <|-- MainViewModelBase
     ViewModelBase <|-- ValidatableViewModelBase
-    IViewModel <|-- IMainViewModel
-    IViewModel <|-- IDisposableViewModel
-    IDisposableViewModel --|> IViewModel
-    IDisposableViewModel --|> IDisposable
-    IMainViewModel --|> IViewModel
-    IMainViewModel <|.. MainViewModelBase
     IDisposableViewModel <|.. DisposableViewModelBase
-    IView : DataContext
-    IMessageService --> MessageResult : uses
+    IMainViewModel <|.. MainViewModelBase
+    IMessageService ..> MessageResult : uses
 ```
+
+### Rough edges
+
+- [MainViewModelBase](Mvvm/MainViewModelBase.md) contains WPF-specific logic for design-mode detection (`IsInDesignModeStatic`) that references `System.Windows` types, violating the framework-agnostic intent of the `Mvvm` core.
+- The `MessageResult` enum in [MessageResult](Mvvm/MessageResult.md) contains members (like `Abort`, `Retry`, `Ignore`) that are never returned by the [IMessageService](Mvvm/IMessageService.md) methods, existing only to maintain numeric alignment with WinForms/WPF enums.
+- [DisposableViewModelBase](Mvvm/DisposableViewModelBase.md) is currently unused by any concrete view model in the repository, serving only as infrastructure for future disposables.
 
 ## Contents
 - [DisposableViewModelBase.cs](Mvvm/DisposableViewModelBase.md)
@@ -113,6 +106,5 @@ classDiagram
 - [IViewModel.cs](Mvvm/IViewModel.md)
 - [MainViewModelBase.cs](Mvvm/MainViewModelBase.md)
 - [MessageResult.cs](Mvvm/MessageResult.md)
-- [Mvvm.csproj](Mvvm/Mvvm.md)
 - [ValidatableViewModelBase.cs](Mvvm/ValidatableViewModelBase.md)
 - [ViewModelBase.cs](Mvvm/ViewModelBase.md)

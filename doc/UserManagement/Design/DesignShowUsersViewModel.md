@@ -1,20 +1,23 @@
+# `UserManagement/Design/DesignShowUsersViewModel.cs`
+
 ### Purpose
 
-`UserManagement/Design/DesignShowUsersViewModel.cs` defines `DesignShowUsersViewModel`, a design-time-only subclass of `ShowUsersViewModel` whose sole job is to give the XAML editor fake data. When a designer (Visual Studio, Blend) opens `UserView.xaml`, the designer instantiates this class instead of the real ViewModel, and it seeds the user list with three hard-coded demo users so the "Current Users" `ListView` renders with sample rows rather than appearing empty.
+`DesignShowUsersViewModel` is a design-time-only subclass of `ShowUsersViewModel` that gives the WPF XAML designer something to render. The real view model loads its user list from the business layer at runtime, so the designer — which can't do that — would show an empty view. This class overrides nothing and simply seeds the inherited `Users` collection with three hard-coded `UserModel` entries (Jane Doe, John Smith, Alice Johnson) in its constructor.
 
 ### Role in the Codebase
 
-This class is never used by the running application. The production code path composes `ShowUsersViewModel` via MEF (`[Export(typeof(IShowUsersViewModel))]` in `UserManagement/ViewModel/ShowUsersViewModel.cs`) and loads real data from `IUserService`. The design class exists purely to make the view previewable in the XAML Designer. Removing it would not affect the application at runtime — the XAML would simply show no users in the designer preview.
+It is one of three design-time stubs in `UserManagement/Design/` (alongside `DesignUserViewModel` and `DesignAddUserViewModel`), each mirroring a real view model from `UserManagement/ViewModel/` with fake data. The class is never instantiated at runtime: it is only referenced from `DesignUserViewModel`'s constructor, which assigns it to the `ShowUsersViewModel` property in place of the MEF import that the real `UserViewModel` uses. Removing it would only degrade the designer preview; runtime behaviour is untouched.
 
 ### Relationships
 
-- **`ShowUsersViewModel`** (`UserManagement/ViewModel/ShowUsersViewModel.cs`) — the parent class, an MEF-exported MVVM ViewModel that exposes `Users`, an `ObservableCollection<UserModel>`, and a `LoadedCommand` that fetches active users from `IUserService`. The design subclass inherits all of this, including the constructor's `UserChangedMessage` messenger registration, and reuses the inherited `Users` collection.
-- **`UserModel`** (`UserManagement/Model/UserModel.cs`) — a simple `ObservableObject` with `FirstName`/`LastName` properties; the demo rows are built from it.
-- **`DesignUserViewModel`** (`UserManagement/Design/DesignUserViewModel.cs`) — the sibling design-time class that composes this one: its constructor assigns `ShowUsersViewModel = new DesignShowUsersViewModel()`, alongside `DesignAddUserViewModel`.
-- **`UserView.xaml`** (`WpfApp1/View/UserView.xaml`) — the consumer. Its `d:DataContext` uses `d:DesignInstance Type=design:DesignUserViewModel, IsDesignTimeCreatable=True`, so the designer instantiates `DesignUserViewModel` (and therefore this class) only at design time. Because `IsDesignTimeCreatable` is set, the constructor runs in the designer.
+- **`ShowUsersViewModel`** (`UserManagement/ViewModel/ShowUsersViewModel.cs`) — the base class. It provides the `Users` `ObservableCollection<UserModel>` this class populates, plus `[Import]` properties (`UserService`, `LoggingService`) and a `UserChangedMessage` messenger subscription in its own constructor. Note that `DesignShowUsersViewModel`'s constructor does **not** call `base()`, and `ShowUsersViewModel`'s parameterless constructor does the messenger registration — but since this class is only built by the designer, that registration is never exercised.
+- **`UserModel`** (`UserManagement/Model/UserModel.cs`) — the data item type; a simple observable `FirstName`/`LastName` pair.
+- **`DesignUserViewModel`** (same directory) — the only in-repo consumer; it constructs `new DesignShowUsersViewModel()` in its constructor, which is itself used via `d:DesignInstance` in the XAML.
 
 ### Behavior & Details
 
-The entire logic is the parameterless constructor: it adds three fixed `UserModel` entries — Jane Doe, John Smith, and Alice Johnson — to the inherited `Users` collection. No other members are defined.
+The entire class is a parameterless constructor that adds three `UserModel` instances to the inherited `Users` collection. There is no other logic, no overridden members, and no side effects beyond populating the collection.
 
-One behavioral note: the inherited `ShowUsersViewModel` constructor registers a `UserChangedMessage` handler on `WeakReferenceMessenger.Default`. Since the design-time instance runs the real constructor, that registration happens in the designer as well — harmless in practice (the designer will not raise those messages), but worth knowing if you ever reason about messenger subscribers. The inherited `LoadedCommand` is also present on the design instance; the XAML only invokes it via an `EventTrigger` on `Loaded`, which does not fire in the designer, so the real `IUserService` lookup (whose `[Import]` would be unpopulated) is never triggered at design time.
+### Rough edges
+
+`ShowUsersViewModel` is declared `partial` but has no other part, and its constructor registers a `WeakReferenceMessenger` handler that throws `NotImplementedException` for `Updated`/`Deleted` user changes — harmless here because this design-time subclass is only ever constructed by the designer, but worth knowing if someone ever instantiates it at runtime.
