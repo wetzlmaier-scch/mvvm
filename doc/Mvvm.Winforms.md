@@ -1,36 +1,29 @@
 ### Purpose
 
-`Mvvm.Winforms` is a thin adapter layer that provides the WinForms implementation of the `IMessageService` contract. It exists to allow framework-agnostic view models to display modal dialogs without referencing WinForms types directly. The directory contains a single class, `MessageService`, which acts as a bridge between the shared `Mvvm` project and the native `System.Windows.Forms.MessageBox` API.
+The `Mvvm.Winforms` project serves as a thin UI adapter that allows framework-agnostic view models to display modal message boxes in a WinForms environment. It isolates the underlying WinForms dependency from the core application logic, ensuring that business logic remains portable. The entire functional surface of this project consists of a single component that implements the `IMessageService` interface.
 
 ### Software Components
 
-The entire functional surface of this project consists of the `MessageService` class found in [`Mvvm.Winforms/MessageService.cs`](Mvvm.Winforms/MessageService.md). This class implements `IMessageService` and exposes nine methods for displaying information, warnings, errors, and questions. Each method is a thin wrapper that translates interface calls into specific `MessageBox.Show` invocations with appropriate icons and button configurations. The class is marked with `[Export(typeof(IMessageService))]`, registering it for MEF (Managed Extensibility Framework) discovery so that view models can consume it via dependency injection.
+This directory contains one primary source file, `MessageService.cs`, which defines the `MessageService` class. This class acts as the WinForms-specific implementation of the `IMessageService` contract. It maps the nine interface methods directly to `System.Windows.Forms.MessageBox.Show` calls, selecting the appropriate buttons and icons for each scenario. The class is decorated with MEF attributes, allowing a `CompositionContainer` to discover and inject it into view models at runtime. It sits alongside sibling implementations in `Mvvm.Wpf` and `Mvvm.Console`, serving as the counterpart for WinForms-hosted applications.
 
 ### Relationships
 
-This project functions as a satellite to the core `Mvvm` project, which defines the `IMessageService` interface and the `MessageResult` enum. `MessageService` depends on the `Mvvm` project for these contracts and on the Windows Forms library for UI rendering. It is one of three interchangeable platform implementations (alongside Console and WPF versions), with the active instance selected at runtime by MEF composition.
-
-View models in other projects, such as `UserManagement/ViewModel/AddUserViewModel.cs`, import `IMessageService` and call methods like `ShowError`. At runtime, the MEF container resolves this import to the `MessageService` instance provided by this project, provided the assembly is loaded. The dependency direction is strictly one-way: `Mvvm.Winforms` depends on `Mvvm`, but `Mvvm` has no knowledge of this project.
+`MessageService` depends on `System.Windows.Forms.MessageBox` for all rendering logic. It implements the `IMessageService` interface defined in `Mvvm/IMessageService.cs` and returns the `MessageResult` enum from `Mvvm/MessageResult.cs`. The dependency flows from the view models, which import `IMessageService`, through this adapter, down to the WinForms UI. Because the implementation is discovered via MEF exports, the specific host project determines which assembly (and thus which `MessageService` class) is loaded.
 
 ```mermaid
 flowchart TD
-    subgraph "Mvvm.Winforms Project"
-        MS[MessageService.cs]
+    VM[View Models] -->|Imports| ISvc{IMessageService}
+    subgraph Mvvm.Winforms
+        MsgSvc[MessageService]
     end
-    
-    subgraph "Mvvm Core Project"
-        IMS[IMessageService.cs]
-        MR[MessageResult.cs]
-    end
-    
-    subgraph "Windows Forms SDK"
-        MB[MessageBox]
-    end
-    
-    MS -->|implements| IMS
-    MS -->|returns| MR
-    MS -->|delegates to| MB
+    ISSvc -->|Implemented By| MsgSvc
+    MsgSvc -->|Uses| WinForms[System.Windows.Forms.MessageBox]
+    MsgSvc -->|Returns| MsgRes[MessageResult Enum]
 ```
+
+### Rough edges
+
+The conversion from `MessageBoxResult` to `MessageResult` relies on a direct cast that assumes the numeric values of the two enums are identical. There is no shared definition or compile-time check to ensure they remain in sync; if either enum is modified independently, the cast will silently produce incorrect results.
 
 ## Contents
 - [MessageService.cs](Mvvm.Winforms/MessageService.md)

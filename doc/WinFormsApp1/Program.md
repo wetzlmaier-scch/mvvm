@@ -1,37 +1,44 @@
+# `WinFormsApp1/Program.cs`
+
 ### Purpose
 
-`WinFormsApp1/Program.cs` is the process entry point for the WinForms host of this modular application. Its `Program.Main` wires up the MEF (Managed Extensibility Framework) composition container, discovers and starts the application's modules, and installs a last-resort unhandled-exception handler. Everything interesting the WinForms app does after launch is delegated to exported `IModuleController` implementations; `Program.cs` only orchestrates startup and shutdown of the process itself.
-
-Note that the class is a small piece of infrastructure — the actual UI lives in the modules this file loads.
+This file is the entry point of the WinForms host application. Its sole job is to start up the MEF-based module system and hand control to whatever modules the composition container resolves. It has no business logic of its own; it exists so that the `Mvvm` module framework has a process to live in. The same bootstrap pattern exists for the WPF host in `WpfApp1`.
 
 ### Role in the Codebase
 
-- This is the only file in `WinFormsApp1/` that the C# compiler uses to produce an executable; it declares the `Main` entry point that the host runtime invokes.
-- It sits alongside `WinFormsApp1/Controller/DefaultModuleController.cs`, which is the module that `Main` will actually run. `Program.cs` does not know that class by name — it only knows the `IModuleController` interface.
-- The solution has three parallel host projects (`WinFormsApp1`, `WpfApp1`, and `Mvvm.Wpf`) with near-identical `Main`/`OnStartup` logic; this file is the WinForms member of that family and should be kept in sync with the others when startup semantics change.
-- Removing it (or its `Main`) means the WinForms project no longer produces a runnable application. Nothing else in the repo calls `Program.Main`.
+`Program.cs` is the executable's `Main` — the only code that runs before the module system is up. Everything else in `WinFormsApp1/` (the `Controller/` and `View/` folders) is discovered and started *by* this file through composition, not referenced from it directly. If it were removed, the assembly would not be an application at all.
+
+Its counterpart is `WpfApp1/`, which follows the same create-container → resolve `IModuleController`s → initialize → run flow, but returns an `ExitCodes.Error` via `Application.Shutdown()` instead of a `Main` return value.
 
 ### Relationships
 
-- `Common.Composition.CompositionHelper` (`Common/Composition/CompositionHelper.cs`) — used to build the `CompositionContainer`. The no-argument overload scans the directory containing the Common assembly for DLLs, loads each with `Assembly.LoadFrom`, and wraps the set in an `AggregateCatalog`/`AssemblyCatalog` so all types in all loaded assemblies are visible to MEF.
-- `Mvvm.IModuleController` (`Mvvm/IModuleController.cs`) — the contract every module implements. `Main` resolves all exports of this interface from the container, then calls `Initialize()` on each, then `Run()` on each. (`Shutdown()` exists on the interface but is never called from `Program.cs` — the WinForms host relies on `Application.Run` returning when the module closes.)
-- `Common.ExitCodes` (`Common/ExitCodes.cs`) — supplies `Ok` (`0`) and `Error` (`-1`) as the process return values.
-- The module actually resolved at runtime for this host is `WinFormsApp1.Controller.DefaultModuleController`, marked `[Export(typeof(IModuleController))]`. Its `Run()` calls `Application.Run((Form)MainView)`, which is what blocks `Main` until the UI is closed.
+- `Common.Composition.CompositionHelper` (`Common/Composition/CompositionHelper.cs`) — builds the `CompositionContainer`. It scans all `*.dll`/`*.exe` files next to the `Common` assembly's location (top directory only, since `Main` calls the parameterless overload), adds each as an `AssemblyCatalog`, plus the entry assembly (`WinFormsApp1` itself). Any load failure is swallowed with a `Console.WriteLine`, so individual assemblies that fail to load do not abort the scan.
+- `Mvvm.IModuleController` (`Mvvm/IModuleController.cs`) — the module contract: `Initialize()`, `Run()`, `Shutdown()`. Exports of this interface are the units this host starts.
+- `WinFormsApp1.Controller.DefaultModuleController` — the actual in-assembly implementation, marked `[Export(typeof(IModuleController))]`. Its `Run()` calls `Application.Run((Form)MainView)`, so this is also what blocks `Main` until the main form closes.
+- `Common.ExitCodes` (`Common/ExitCodes.cs`) — `Ok = 0` and `Error = -1`, used as the process return value.
+
+No other code in the repository calls into `Program`; it is called by the runtime.
 
 ### Behavior & Details
 
-1. `Main` is `[STAThread]` and returns an `int`. It first calls `ApplicationConfiguration.Initialize()` (a source-generated method in modern WinForms templates) and then registers `AppDomainUnhandledException` on `AppDomain.CurrentDomain`. The comment claims this is skipped in Debug, but the code registers the handler unconditionally — the handler merely *reports* (a `Trace.TraceError` and, when non-terminating, a German "Es ist ein Fehler aufgetreten." `MessageBox`), it does not swallow the exception, so the debugger can still break on first chance.
-2. It creates the container via `CompositionHelper.CreateCompositionContainer()` and stores it in the static `_container` field. `CreateCompositionContainer` silently `Console.WriteLine`s and skips any assembly that fails to load; that is the first reason module resolution can be thin.
-3. `_container.GetExportedValues<IModuleController>()` is called inside a `try`/`catch` that catches only `ReflectionTypeLoadException`. In that case each `LoaderExceptions` entry is written to the console and the process returns `ExitCodes.Error`. Any other exception (e.g. `CompositionException` for missing imports) propagates out of `Main` and is handled by the CLR's default policy, not by this file.
-4. If zero modules are exported, `Main` shows a "No module found." error dialog and returns `ExitCodes.Error`.
-5. Two separate `foreach` loops then run over `_moduleControllers`: first every `Initialize()`, then every `Run()`. This is a deliberate ordering — all modules must be initialized before any is allowed to start, because modules can depend on each other's initialized state.
-6. Because `Run()` on `DefaultModuleController` calls `Application.Run(form)`, the second `foreach` blocks on the first module's message loop and never reaches any later `Run()`. With one module that is fine; if a future module is added expecting a second `Run()` to execute, that will not happen as written.
-7. When the message loop ends (the main form closes), `Main` falls through and returns `ExitCodes.Ok`. `_container` and `_moduleControllers` are never disposed, and `Shutdown()` is never called on the controllers.
+`Main` is `[STAThread]` (required for WinForms UI) and returns an `int` used as the process exit code. Startup proceeds in this order:
+
+1. `ApplicationConfiguration.Initialize()` — generated bootstrap for DPI/font settings.
+2. An `AppDomain` unhandled-exception handler is attached.
+3. The composition container is created via `CompositionHelper.CreateCompositionContainer()`.
+4. All exported `IModuleController` values are resolved into the static `_moduleControllers` array.
+5. If resolution throws `ReflectionTypeLoadException`, each `LoaderExceptions` entry is printed to the console and `Main` returns `ExitCodes.Error`.
+6. If zero controllers were resolved, a "No module found." error dialog is shown and `Main` returns `ExitCodes.Error`.
+7. Each controller's `Initialize()` is called — for every controller, before any of them runs.
+8. Each controller's `Run()` is called. In the shipped configuration, `DefaultModuleController.Run()` blocks in `Application.Run` until the main form closes, so step 8 is effectively the entire lifetime of the app.
+9. When the message loop ends, `Main` returns `ExitCodes.Ok`.
+
+The exception handler (`HandleException`) logs the exception via `Trace.TraceError` and, only if the exception is *not* terminating, shows a German error dialog ("Es ist ein Fehler aufgetreten."). Termination-level exceptions get no dialog; the process simply ends.
 
 ### Rough edges
 
-- The comment above the `AppDomain.CurrentDomain.UnhandledException += ...` line says the handler should not be attached in Debug, but there is no `#if DEBUG` guard — the handler is always attached. It does not suppress first-chance exceptions, so the intended "let the debugger break" behaviour still works, but the comment does not match the code.
-- Only `ReflectionTypeLoadException` is caught around module resolution; `CompositionException` (for example, from an unsatisfied `[Import]` in `DefaultModuleController`'s `[ImportingConstructor]`) escapes `Main` as an unhandled exception and produces the default CLR crash output rather than the friendly "No module found." dialog.
-- `Shutdown()` is declared on `IModuleController` but never invoked from `Program.cs`, so modules cannot cleanly tear down from the host's side.
-- The two `foreach` loops assume each module's `Run()` returns; with `DefaultModuleController` it does not, so only the first module in the array is ever started.
-- The user-facing strings are inconsistent: "No module found." is English, the unhandled-exception dialog is German ("Es ist ein Fehler aufgetreten." / "Fehler").
+- `IModuleController.Shutdown()` is never called by this host. When the main form closes, `Application.Run` returns and `Main` exits immediately, so `DefaultModuleController.Shutdown()` (which closes the view) is unreachable in practice.
+- `Main` returns `ExitCodes.Ok` unconditionally after the `Run()` loop, even if a module's `Run()` returned early or failed silently.
+- The exception dialog text is in German while the "No module found." dialog is in English — inconsistent user-facing language within the same host.
+- `_container` and `_moduleControllers` are static and never disposed.
+- The `ReflectionTypeLoadException` catch will not fire in the usual case where `DefaultModuleController` fails to load: `CompositionHelper` already swallows per-assembly load errors with a `Console.WriteLine`, so the container is simply created without that assembly and the app hits the "No module found." path instead.

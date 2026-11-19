@@ -2,23 +2,28 @@
 
 ### Purpose
 
-`DebugConverter` is a WPF value converter that exists purely for debugging data bindings. When a binding is routed through it, every `Convert` call writes the value, target type, and parameter to the debug output stream and then calls `Debugger.Break()`, dropping the developer into the debugger mid-binding. The value itself passes through unchanged, so the UI keeps working while you inspect state.
+`DebugConverter` is a WPF value converter that exists purely to help developers inspect data-binding traffic at runtime. When a binding is routed through it, every `Convert` call writes the value, target type, and parameter to the debug output via `Debug.WriteLine` and then calls `Debugger.Break()` so execution pauses while the values are visible. The value itself passes through unchanged — the converter alters no data, it only observes and interrupts.
 
 ### Role in the Codebase
 
-It is the only component in the `Common/Converter` directory, which exists to hold diagnostic tools for WPF data binding. The class implements `System.Windows.Data.IValueConverter` (a .NET WPF interface, not defined in this repo), which is why it can be instantiated directly in XAML markup. Nothing in the application depends on it at runtime in a meaningful way — removing it would only break XAML that references the `MyDebugConverter` resource key, which today is commented out.
+It is the only file in the `Common/Converter` directory, which exists to hold diagnostic tools for WPF data binding. Because it lives in the `Common` assembly (not the `WpfApp1` app assembly), any view in the application can declare it as an XAML resource via the `clr-namespace:Common.Converter;assembly=Common` mapping.
+
+Removing it would break nothing in the current runtime behaviour: `WpfApp1/View/UserView.xaml` declares it as the resource `MyDebugConverter`, but the only binding that uses it (`{Binding LastName, Converter={StaticResource MyDebugConverter}}`) is commented out. The class is effectively dormant until someone re-enables or adds such a binding.
 
 ### Relationships
 
-- **`WpfApp1/View/UserView.xaml`** declares it as a resource — `<converter:DebugConverter x:Key="MyDebugConverter" />` via the `clr-namespace:Common.Converter;assembly=Common` mapping — and contains one commented-out binding that uses it: a `TextBox` bound to `LastName` with `Converter={StaticResource MyDebugConverter}`.
-- Callers are WPF views that reference it as a static resource in a binding's `Converter` property. It lives in the `Common` assembly, so it's shared infrastructure rather than app-specific code.
+- **Implements `System.Windows.Data.IValueConverter`** — a WPF (.NET framework/WPF) interface, not defined in this repository. The two members `Convert` and `ConvertBack` are the interface's required methods.
+- **Consumed in `WpfApp1/View/UserView.xaml`** — declared as `<converter:DebugConverter x:Key="MyDebugConverter" />` in the window resources, but referenced only by a commented-out `TextBox`. No active code path currently calls it.
+
+No other project files reference the class.
 
 ### Behavior & Details
 
-- **`Convert`** — logs via `Debug.WriteLine` the incoming `value`, `targetType`, and `parameter`, then calls `Debugger.Break()`, then returns `value` unchanged. So the converter is a pure passthrough with a breakpoint as a side effect.
-- **`ConvertBack`** — returns `value` unchanged, with no logging or break. Writes from the UI back to the data source are silent; only source-to-target conversions interrupt.
+- **`Convert(object? value, Type targetType, object? parameter, CultureInfo culture)`** — logs `"Convert: Value '{0}', TargetType '{1}', Parameter '{2}'"` to the debug trace, then immediately calls `Debugger.Break()`. It returns `value` unmodified. The break means that while a debugger is attached, the app halts on every binding update that flows through this converter — by design, since the point is manual inspection. When no debugger is attached, `Debugger.Break()` is a no-op and only the `Debug.WriteLine` output is produced.
+- **`ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)`** — a pass-through that returns `value` unchanged, with no logging and no break. A converter bound in `TwoWay` or `OneWayToSource` mode would therefore only interrupt on the source-to-target direction.
+
+Both members are safe to call repeatedly; there is no state, caching, or side effect other than the debug output and the debugger break.
 
 ### Rough edges
 
-- `Debugger.Break()` in `Convert` means a single binding that updates on every keystroke (e.g. `UpdateSourceTrigger=PropertyChanged` in the reverse direction is fine, but any two-way or frequent source refresh) will halt the process repeatedly while attached. It is clearly meant to be attached momentarily and removed, not left in a binding.
-- The `ConvertBack` path is not instrumented, so if you are debugging why a property write isn't taking effect, this converter will not help.
+- The `Debugger.Break()` in `Convert` means re-enabling the commented-out `UserView` binding in a release/debug build with a debugger attached will halt the app on every keystroke of that `TextBox` (it uses `UpdateSourceTrigger=PropertyChanged`-style live bindings elsewhere in the same form), making it usable only for a one-off inspection, not extended debugging.

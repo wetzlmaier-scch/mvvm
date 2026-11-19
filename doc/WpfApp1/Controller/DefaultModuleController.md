@@ -1,38 +1,43 @@
 # `WpfApp1/Controller/DefaultModuleController.cs`
 
-## Purpose
+### Purpose
 
-`DefaultModuleController` is the WPF application's lifecycle controller. It is a single, minimal implementation of `IModuleController` (defined in `Mvvm/IModuleController.cs`) that exists so the WPF host has a module to load. Its whole job is to take the main view and main view model handed to it by MEF, bind them together, and map the three lifecycle callbacks (`Initialize`, `Run`, `Shutdown`) to showing and closing the main window.
+This file defines `DefaultModuleController`, the WPF host's implementation of the `IModuleController` lifecycle contract. It exists to be discovered by MEF at startup and to compose the application's main window: it binds the main view model to the main view and drives the view's show and close in response to the lifecycle phases the host application invokes.
 
-## Role in the codebase
+### Role in the Codebase
 
-The WPF host is `App` (`WpfApp1/App.xaml.cs`), which is an empty subclass of `MvvmApplication` (`Mvvm.Wpf/MvvmApplication.cs`). `MvvmApplication.OnStartup` builds a MEF `CompositionContainer`, resolves every exported `IModuleController`, calls `Initialize()` on all of them, then `Run()` on all of them, and finally `Shutdown()` on all of them (in reverse order) in `OnExit`. This class is the only `IModuleController` export in `WpfApp1` — if it were removed, `MvvmApplication` would find no modules, show a "No module found." error box, and shut down with an error exit code.
+The `Controller/` directory in `WpfApp1` contains only this class, making it the single `IModuleController` export in the WPF project. `Mvvm.Wpf/MvvmApplication.cs` (the base class of the WPF host's `App`) resolves all `IModuleController` exports from the MEF container in `OnStartup`, calls `Initialize()` on each, then `Run()` on each; in `OnExit` it calls `Shutdown()` on each, in reverse order. Removing this class would leave the container with no module for the WPF host, and `MvvmApplication.OnStartup` would show a "No module found." error and shut down with `ExitCodes.Error`.
 
-## Relationships
+A near-identical sibling, `WinFormsApp1/Controller/DefaultModuleController.cs`, plays the same role in the WinForms host, importing `IMainView<DialogResult, int>` instead of `IMainView<bool?, double>`.
 
-- **`IModuleController`** (`Mvvm/IModuleController.cs`) — the three-method lifecycle contract this class implements: `Initialize()`, `Run()`, `Shutdown()`.
-- **`IMainView<TDialogResult, TDimension>`** (`Mvvm/IMainView.cs`) — extends `IDialogView<TDialogResult>`, which declares `Show()` and `Close()`. This class receives it as `IMainView<bool?, double>` and calls those two methods. The concrete export in this project is `UserView` (`WpfApp1/View/UserView.xaml.cs`), a `Window` exported as `IMainView<bool?, double>`.
-- **`IMainViewModel`** (`Mvvm/IMainViewModel.cs`) — extends `IViewModel`; this class receives it, holds a reference, and assigns it as the view's `DataContext` in the constructor. Its concrete implementation is injected by MEF.
-- **MEF (`System.ComponentModel.Composition`)** — the class is discovered via `[Export(typeof(IModuleController))]` and constructed via its `[ImportingConstructor]`-marked constructor.
+### Relationships
 
-The caller is `MvvmApplication`: it never references this class by name, only through the `IModuleController` interface resolved from the container.
+- **`Mvvm.IModuleController`** (`Mvvm/IModuleController.cs`) — the interface implemented here. Declares exactly three methods: `Initialize()`, `Run()`, and `Shutdown()`. All three are overridden in this class as `virtual` with the bodies described below.
+- **`Mvvm.IMainView<TDialogResult, TDimension>`** (`Mvvm/IMainView.cs`) — extends `IDialogView<TDialogResult>` in turn, which extends `IView`. Imported here as `IMainView<bool?, double>`; the concrete export is `UserView` (`WpfApp1/View/UserView.xaml.cs`), a WPF `Window` carrying `[Export(typeof(IMainView<bool?, double>))]`.
+- **`Mvvm.IMainViewModel`** (`Mvvm/IMainViewModel.cs`) — extends `IViewModel` and declares `Icon`, `CloseWindow()`, and `Shutdown(int exitCode)`. The concrete export is `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`), which is exported under both `IUserViewModel` and `IMainViewModel`.
+- **Caller** — `MvvmApplication.OnStartup`/`OnExit` (`Mvvm.Wpf/MvvmApplication.cs`) invoke the lifecycle methods through the `IModuleController` interface; nothing references this class by name.
 
-## Behavior & Details
+### Behavior & Details
 
-- **Constructor** — The `[ImportingConstructor]` tells MEF to inject `IMainView<bool?, double>` and `IMainViewModel` here. Beyond storing them in the two `protected` properties, the constructor wires `MainView.DataContext = mainViewModel`. That binding is the only setup the module does; nothing happens in `Initialize()`.
+**Construction** — The `[ImportingConstructor]` tells MEF to satisfy two parameters: `IMainView<bool?, double>` and `IMainViewModel`. Beyond storing them in the two `protected` read-only properties, the constructor does one thing that matters for the running app:
 
-- **`Initialize()`** — Empty by design; the constructor already did all the work.
+```csharp
+MainView.DataContext = mainViewModel;
+```
 
-- **`Run()`** — Calls `MainView.Show()`, which displays the main window.
+This is what makes the `UserView` window actually display the user-management content — the XAML data bindings resolve against `UserViewModel` because of this assignment. If it were removed, the window would open with no bound data.
 
-- **`Shutdown()`** — Calls `MainView.Close()`. In practice the host reaches `Shutdown()` from `MvvmApplication.OnExit`, which fires when the application is exiting (typically when the main window closes). So `Close()` here is a second close on an already-closing/closed window — harmless, but the real exit is driven by the user closing the window, not by this method.
+**`Initialize()`** — Empty. The WPF module has nothing to prepare before it runs.
 
-- All three lifecycle methods are `virtual`, so a subclass could extend the WPF app's startup/shutdown behavior by overriding them, while keeping the MEF export of the base type.
+**`Run()`** — Calls `MainView.Show()`. Since `UserView` is a `Window`, this opens it on the UI thread. Note this is `Show()`, not `ShowDialog()`, so the app keeps running after the call returns; the WPF message loop in the host's `App` keeps the process alive.
 
-- The `protected` `MainView` and `MainViewModel` properties are there for exactly that: a derived controller can access the wired view and view model.
+**`Shutdown()`** — Calls `MainView.Close()`. Invoked by `MvvmApplication.OnExit` in reverse order over all modules.
 
-## Rough edges
+**Inheritance of the properties** — `MainView` and `MainViewModel` are `protected`, which is unusual for a class with no known subclasses in this repository. They signal an intent to be subclassed (e.g., a WPF-specific controller that needs the view for extra work), but the access level has no current consumer.
 
-- `Shutdown()` calls `MainView.Close()`, but in this host the window is already closing when `OnExit` runs, so the call is effectively a no-op — the module never initiates shutdown on its own.
+**What is deliberately not done** — The controller never calls the view model's `CloseWindow()` or `Shutdown(int)` members, even though `IMainViewModel` declares them. Closing the window is done directly on the view (`MainView.Close()`), so the view model's own shutdown hook is only reachable from the view model's internals, not from the host's lifecycle path. The same holds in the WinForms sibling.
 
-- The generic parameters on the view (`IMainView<bool?, double>`: dialog result, dimension type) are fixed here and must match the export in `UserView.xaml.cs`; a mismatch between the two files means MEF cannot satisfy the constructor and the container will fail to build this module.
+### Rough edges
+
+- The `bool?` dialog result type parameter on `IMainView<bool?, double>` is vestigial here: `UserView` is a `Window`, never shown as a dialog, so no dialog result is ever produced. The type argument exists only to match the interface's shape.
+- `Shutdown()` is defined and called by `MvvmApplication.OnExit`, but `Run()` opens the window with `Show()`, so in practice the application typically exits when the user closes the window itself; the module-level `Shutdown()` path is reached via `OnExit`, which fires from that same window close. There is no separate explicit shutdown trigger from the view model back to the host.

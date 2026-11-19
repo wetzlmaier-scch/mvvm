@@ -1,44 +1,37 @@
-# Documentation
+# `DataAccessLayer.Hibernate/HibernateUnitOfWork.cs`
 
 ### Purpose
 
-`DataAccessLayer.Hibernate/HibernateUnitOfWork.cs` defines `HibernateUnitOfWork`, the NHibernate-backed unit of work for this data access layer. It wraps the transaction lifetime of a single `IStatelessSession`: begin, commit, rollback, and dispose of the transaction while guarding against invalid state transitions. Business code that persists through `HibernateRepository<TKey>` uses it to delimit unit-of-work transactions around a group of operations.
+`HibernateUnitOfWork` is the NHibernate-specific unit of work for the data access layer: it wraps a single `IStatelessSession` transaction so business code can begin, commit, and roll back work without touching NHibernate types directly. It implements the provider-agnostic `IUnitOfWork` contract (in `DataAccessLayer/IUnitOfWork.cs`) plus the NHibernate-only `IHibernateUnitOfWork` (same directory), which adds `BeginTransaction(IsolationLevel)` so callers can choose the isolation level instead of being stuck with the default.
 
 ### Role in the Codebase
 
-It is the concrete implementation of `IUnitOfWork` (defined in `DataAccessLayer/IUnitOfWork.cs`) and `IHibernateUnitOfWork` (defined in `DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs`). The main user is `HibernateRepository<TKey>` (same directory): its `UnitOfWork` property lazily creates a `HibernateUnitOfWork` and shares the repository's own `IStatelessSession` with it, so a transaction begun here scopes the session the repository's queries and `Save` calls run on. Disposing a repository disposes this unit of work via `HibernateRepository.Dispose()`.
+It is the transaction primitive of the `DataAccessLayer.Hibernate` project. Repositories are the ones that actually perform reads and writes; this class is how they — or anything else holding a reference — group those operations into one atomic transaction. The primary in-repo caller is `HibernateRepository<TKey>` (in `HibernateRepository.cs`), which lazily creates one per repository instance via its `UnitOfWork` property: `_unitOfWork ??= new HibernateUnitOfWork(_session)`. If removed, the NHibernate side of the data access layer would have no way to run multi-statement work atomically.
 
 ### Relationships
 
-- **Base interfaces, both in this codebase:**
-  - `IUnitOfWork` (in `DataAccessLayer/IUnitOfWork.cs`) declares `IsInTransaction`, `BeginTransaction()`, `RollBackTransaction()`, `CommitTransaction()`, and inherits `IDisposable` from `System.IDisposable`. This class provides all of them.
-  - `IHibernateUnitOfWork` (in `DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs`) extends `IUnitOfWork` with one extra member, `BeginTransaction(IsolationLevel isolationLevel)`. This class is the only implementation of either interface.
-- **NHibernate (external library):** `IStatelessSession`, `ITransaction`, and their `BeginTransaction`/`Commit`/`Rollback` semantics come from the NHibernate assembly.
-- **Callers:** `HibernateRepository<TKey>` constructs it in its `UnitOfWork` property getter and disposes it in its own `Dispose()`. Anything that holds an `IUnitOfWork` or `IHibernateUnitOfWork` (typically obtained via `repository.UnitOfWork`) can drive the transaction without knowing this concrete type.
+- **`IUnitOfWork`** (`DataAccessLayer/IUnitOfWork.cs`): the base contract. Declares `IsInTransaction`, `BeginTransaction()`, `RollBackTransaction()`, `CommitTransaction()`, and extends `IDisposable`. Everything except the isolation-level overload comes from this interface.
+- **`IHibernateUnitOfWork`** (`DataAccessLayer.Hibernate/IHibernateUnitOfWork.cs`): extends `IUnitOfWork` with `BeginTransaction(IsolationLevel isolationLevel)`. This class is the only implementor of that interface.
+- **`IStatelessSession`** (NHibernate): the session passed in via the constructor. Note the session is *not* created or disposed by this class — the owning repository holds it for its lifetime, so several unit-of-work instances can share one session.
+- **`HibernateRepository<TKey>`** (`HibernateRepository.cs`): constructs a `HibernateUnitOfWork` sharing its own session and disposes it in its `Dispose()`.
 
 ### Behavior & Details
 
-- **Construction** takes an `IStatelessSession` and stores it as the sole field. No transaction is started at construction; a caller must invoke `BeginTransaction` before committing or rolling back.
+- **Single transaction at a time.** Exactly one `ITransaction` may be active. `_transaction != null` drives the `IsInTransaction` property, and `BeginTransaction` throws `InvalidOperationException` if a transaction is already running — you cannot nest or stack transactions here.
 
-- **`IsInTransaction`** returns true exactly while an `ITransaction` instance is held. It is the guard used by every method below, so callers can check it to decide whether a transaction is active.
+- **`BeginTransaction()`** starts with `IsolationLevel.ReadCommitted`; the overload takes the level explicitly and hands it straight to `_session.BeginTransaction(isolationLevel)`.
 
-- **`BeginTransaction()`** delegates to the overload with `IsolationLevel.ReadCommitted`, the SQL Server default.
+- **`CommitTransaction()`** calls `_transaction.Commit()` inside a try/catch. If the commit throws (e.g. a constraint violation surfaces at commit time), it calls `RollBackTransaction()` and then rethrows the original exception. In practice NHibernate has usually already marked the transaction as needing rollback, so the inner `Rollback()` typically does nothing, but the release of the transaction reference still happens.
 
-- **`BeginTransaction(IsolationLevel)`** calls `_session.BeginTransaction(isolationLevel)` and stores the returned `ITransaction`. It throws `InvalidOperationException` if a transaction is already active, so there is no support for nested transactions on one session — the running transaction must be committed or rolled back first.
+- **`RollBackTransaction()`** throws `InvalidOperationException` if no transaction is running, otherwise rolls back and clears the reference.
 
-- **`CommitTransaction()`** commits the active transaction, then releases it (dispose and null out the field, see `ReleaseCurrentTransaction`). If the commit throws, it calls `RollBackTransaction()` and then rethrows the original exception. Note the rollback here is best-effort cleanup on the failure path.
+- **`Dispose()`** has two quirks worth knowing:
+  - It only disposes the transaction — the session is never touched (correct, since the repository owns it).
+  - It does **not** roll back a live transaction on dispose; the in-flight transaction is simply abandoned without commit or rollback. Also, `_isDisposed` is only set when a transaction is actually present, and nothing is guarded by it afterwards — repeated `Dispose()` calls re-dispose the transaction object.
 
-- **`RollBackTransaction()`** rolls back the active transaction, then releases it in the same way. Throws `InvalidOperationException` when no transaction is active.
-
-- **`ReleaseCurrentTransaction()`** is the private helper that disposes the `ITransaction` and sets the field to null, which is what flips `IsInTransaction` back to false.
-
-- **`Dispose()`** disposes the `ITransaction` if one is still open at disposal time and sets `_isDisposed`. Note that it does *not* dispose the underlying `IStatelessSession` — that object's lifetime is owned by whoever constructed the repository (see `HibernateRepositoryFactory`), and the repository's `Dispose()` likewise never disposes its session. So a transaction still open when the repository is disposed is left without a commit or rollback; it is simply disposed.
-
-- **`_isDisposed`** is set only inside `Dispose()` and is never reset; the class has no `GetService`-style reentrancy guard beyond the null check on `_transaction`. Calling `Dispose()` twice is safe because the second call sees `_transaction` as null after `ReleaseCurrentTransaction` already cleared it, or because `_isDisposed` is already true.
+- The commit path releases the transaction via `ReleaseCurrentTransaction()`, which disposes the `ITransaction` and sets `_transaction = null`, so `IsInTransaction` becomes false only after a successful commit or a rollback.
 
 ### Rough edges
 
-- The error message in `CommitTransaction()` reads "Cannot roll back a transaction while there is no transaction running." even though the failing operation is a commit. This is a copy-paste of the rollback guard's message and will mislead anyone logging or surfacing the exception.
-- `_isDisposed` is assigned but never read in a way that changes behaviour — the only guard that matters is the `_transaction != null` check. It is dead state that suggests a dispose-guard pattern this class does not actually enforce.
-- `Dispose()` does not roll back or commit an open transaction; it just disposes it. Callers relying on `using` blocks to clean up uncommitted work should know the transaction is silently dropped.
-- `BeginTransaction` has no overload for `IsolationLevel.Unspecified` or for ambient transactions; the only supported levels are whatever `IsolationLevel` values NHibernate's `IStatelessSession.BeginTransaction` accepts.
+- `CommitTransaction()` uses the wrong error message for the no-active-transaction check — it says "Cannot roll back a transaction" instead of commit.
+- `Dispose()` neither rolls back nor commits a live transaction, and its `_isDisposed` guard is ineffective (only set when a transaction exists, never consulted again), so double-dispose re-disposes the underlying `ITransaction`.

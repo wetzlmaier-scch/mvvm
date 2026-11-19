@@ -1,44 +1,40 @@
-# `UserManagement/ViewModel/AddUserViewModel.cs`
+# `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`)
 
 ### Purpose
 
-`AddUserViewModel` is the view model behind the "add user" form. It holds the form fields (`FirstName`, `LastName`), validates them with FluentValidation, saves a new user through the business layer, and broadcasts a "user added" message to the rest of the application. It exists so that every UI front-end (WPF, WinForms, console) and the test suite can drive the same add-user behaviour without touching persistence.
+This class is the view model behind the "create a new user" form. It holds the two form fields (`FirstName`, `LastName`), validates them as the user types, persists a new user through the business layer, and then announces the addition to the rest of the application so the user list stays in sync.
 
 ### Role in the Codebase
 
-It is one of the leaf view models of the `UserManagement` module. The parent `UserViewModel` exposes it as its `AddUserViewModel` property (the `IUserViewModel` interface declares `IAddUserViewModel AddUserViewModel { get; }`), and the WPF and WinForms user forms bind directly to its `FirstName`, `LastName`, and `SaveUserCommand`. Because it is the single place that performs validation, the `UserService.AddUser` call, the `UserChangedMessage` broadcast, and the field reset, removing it would break the add-user feature in every front-end and the `UserViewModelTest` suite.
+It is a leaf view model in the `UserManagement/ViewModel` module, paired with its sibling `ShowUsersViewModel` (the user-list side). The parent `UserViewModel` does not create it directly — both are MEF exports: the class is published via `[Export(typeof(IAddUserViewModel))]` and injected into `UserViewModel` through its `[Import]` property. UI (the WPF `UserView.xaml` and WinForms `UserForm`) binds to this class through the `IAddUserViewModel` interface, the `ConsoleApp1/Program.cs` entry point drives it headlessly, and `TestProject1/UserViewModelTest.cs` instantiates it for unit tests. `Design/DesignAddUserViewModel.cs` subclasses it to feed static design data to the views in the designer. Removing it would break user creation in every front end.
 
 ### Relationships
 
-- **Base class** — `ValidatableViewModelBase<T>` (`Mvvm/ValidatableViewModelBase.cs`) supplies `INotifyDataErrorInfo`-driven validation backed by a FluentValidation `IValidator<T>`. `AddUserViewModel` instantiates it with `IUser` and a `new UserValidator()`, so it inherits `GetErrors`, `HasErrors`, `ErrorsChanged`, `ValidateAllProperties`, and `ValidateProperty`. Nothing here overrides any of them.
-- **`IUser`** (`Dto/IUser.cs`) — the interface the class implements via the base class generic; the generated `FirstName`/`LastName` properties satisfy it.
-- **`UserValidator`** (`Dto/Validation/UserValidator.cs`) — FluentValidation rules requiring `FirstName` and `LastName` to be non-empty; constructed by this class and passed to the base.
-- **`IAddUserViewModel`** (`UserManagement/ViewModel/IAddUserViewModel.cs`) — the MEF export contract. The class is exported as this interface via `[Export(typeof(IAddUserViewModel))]`, and the same interface is what `UserViewModel` imports.
-- **`IUserService`** (`BusinessLayer/IUserService.cs`) — MEF-injected via `[Import]`; its `AddUser(UserDto)` performs the actual persistence.
-- **`ILoggingService`** (`Logging`) and **`IMessageService`** (`Mvvm`) — also MEF-injected. `MessageService` is used to surface the validation failure; `LoggingService` is injected but not referenced by any method body in this class.
-- **`UserDto`** (`Dto`) — the data object built from the form fields and passed to `UserService.AddUser`.
-- **`UserChangedMessage` / `UserModel`** (`UserManagement/Messaging`, `UserManagement/Model`) — after a successful save, a `UserChangedMessage(UserChangeType.Added, userModel)` is sent through `WeakReferenceMessenger.Default` so the rest of the module (e.g. `ShowUsersViewModel`) can refresh.
-- **Callers** — `UserViewModel` (composition host), the WPF `UserView.xaml` and WinForms `UserForm.cs` views (data binding), `ConsoleApp1/Program.cs` (drives `SaveUserAsync()` in a loop), `DesignAddUserViewModel` (`UserManagement/Design/DesignAddUserViewModel.cs`, a designer-time subclass), and `TestProject1/UserViewModelTest.cs`.
+- **`IAddUserViewModel`** (`UserManagement/ViewModel/IAddUserViewModel.cs`) — the interface this class implements. It extends `INotifyDataErrorInfo` and `IUser`, so views bind validation state and this class can be handed straight to the validator.
+- **`ValidatableViewModelBase<T>`** (`Mvvm/ValidatableViewModelBase.cs`, in-repo) — the base class. This class passes `new UserValidator()` as the `IValidator<IUser>`; the base class implements `INotifyDataErrorInfo` (error dictionary, `HasErrors`, `ErrorsChanged`) and provides the `ValidateAllProperties` / `ValidateProperty` helpers. Inherited up the chain: `ViewModelBase` → `ObservableObject`.
+- **`UserValidator`** (`Dto/Validation/UserValidator.cs`) — FluentValidation rules: `FirstName` and `LastName` must be non-empty ("Firstname is required." / "Lastname is required.").
+- **`IUserService`** (defined in `BusinessLayer/IUserService.cs`, implemented by `BusinessLayer/UserService.cs`) — MEF-injected; `AddUser(UserDto)` is the persistence call.
+- **`IMessageService`** (Logging project, imported) — shows the "User data is invalid!" error popup when validation fails.
+- **`UserModel` / `UserChangedMessage` / `UserChangeType`** (`UserManagement/Model`, `UserManagement/Messaging`) — sent over `WeakReferenceMessenger` after a successful save; `ShowUsersViewModel` subscribes in its constructor and appends the new user to its list.
+- **`IUser`, `UserDto`** (`Dto` project) — `IUser` is the shape the validator runs against (this class implements it via the interface); `UserDto` is the payload handed to the service.
 
 ### Behavior & Details
 
-**Form fields.** `_firstName` and `_lastName` use CommunityToolkit's `[ObservableProperty]`, which generates the public `FirstName`/`LastName` properties (satisfying `IUser`) and the change handlers. Each field is annotated `[NotifyCanExecuteChangedFor(nameof(SaveUserCommand))]`, so `SaveUserCommand` re-evaluates its `CanExecute` whenever a field changes. Each generated change handler calls `ValidateProperty(this, nameof(...))`, giving live per-field validation: an error is reported through `ErrorsChanged` as soon as a field becomes empty (which clears the WPF/WinForms input errors the moment the user starts typing).
+**Fields and live validation.** `FirstName` and `LastName` are generated from `_firstName` / `_lastName` by the CommunityToolkit.Mvvm `[ObservableProperty]` source generator. Each change fires its `On...Changed` partial, which calls `ValidateProperty(this, nameof(...))` from the base class, so a single field is re-validated on every keystroke. The same attributes mark the properties with `[NotifyCanExecuteChangedFor(nameof(SaveUserCommand))]`, which re-evaluates the command's ability to run whenever a field changes (in practice, `SaveUserCommand` has no explicit guard, so this mainly matters if one is added). The WPF view binds the text boxes with `ValidatesOnNotifyDataErrors=True`, so the base class's `INotifyDataErrorInfo` errors surface as red validation borders.
 
-Note that validation validates the view model itself, not a DTO — `ValidateProperty(this, ...)` passes the view model as the `IUser` to the validator, so the rules read the live `FirstName`/`LastName` properties.
+**Saving (`SaveUserAsync`, exposed as `SaveUserCommand`).** The source generator strips the `Async` suffix and produces the `SaveUserCommand` async relay command. The flow:
 
-**Saving (`SaveUserAsync`).** The source has an `[AsyncRelayCommand]`-style `[RelayCommand]` method, so the toolkit generates the `SaveUserCommand` async relay command named in the interface. The method:
-
-1. Runs `ValidateAllProperties(this)`, which clears and repopulates the inherited error dictionary.
-2. If `HasErrors`, shows `MessageService.ShowError("User data is invalid!")` and returns — no save attempt.
-3. Otherwise awaits `UserService.AddUser(new UserDto { FirstName, LastName })`.
-4. Sends `new UserChangedMessage(UserChangeType.Added, new UserModel { ... })` on `WeakReferenceMessenger.Default` so other parts of the app learn about the new user.
-5. Resets `FirstName` and `LastName` to `string.Empty` so the form is ready for the next entry (the tests assert the fields are empty after a successful save).
-
-**Exception handling.** Only `BusinessLayerException` is caught, and the handler is `throw;` — a bare rethrow. This means the catch adds no behaviour of its own: a business-layer failure (e.g. a duplicate user, if `UserService` raises one) propagates to the caller of `SaveUserAsync`/`SaveUserCommand`, and the fields are *not* reset when it does. Any other exception type likewise propagates.
+1. `ValidateAllProperties(this)` re-runs the full `UserValidator` and clears the base class's error dictionary first, so the save decision is based on current field values, not stale errors.
+2. If `HasErrors`, it shows the "User data is invalid!" message via `MessageService` and returns — nothing is saved.
+3. Otherwise it calls `UserService.AddUser(new UserDto { FirstName, LastName })`. That service re-checks both fields with `Guard` and wraps any failure (roll back transaction, log, rethrow as `BusinessLayerException`).
+4. On success it broadcasts `new UserChangedMessage(UserChangeType.Added, userModel)` over `WeakReferenceMessenger.Default` — this is the only coupling to the list side; it never touches `ShowUsersViewModel`'s collection directly.
+5. It then resets `FirstName` and `LastName` to `string.Empty`, so the form is ready for the next user. Note this re-triggers the per-field validation, which re-registers the "required" errors for the now-empty fields.
+6. A `catch (BusinessLayerException) { throw; }` deliberately rethrows business failures so they propagate to the command's caller (in WPF, that means the `IAsyncRelayCommand` surfaces the exception).
 
 ### Rough edges
 
-- The `catch (BusinessLayerException) { throw; }` block is inert — it neither logs nor swallows, so the catch has no observable effect.
-- `LoggingService` is imported and declared on `IAddUserViewModel` but is never used in this class.
-- `OnFirstNameChanged` contains a commented-out block that synced the value into a `_user` field; no such field exists, so it is dead code.
-- The `[RelayCommand]` comment says the toolkit generates `SaveUserCommand` from the `Async` suffix; the attribute itself is just `[RelayCommand]`, so `SaveUserCommand` is an `IAsyncRelayCommand` and its `CanExecute` is re-queried via the `NotifyCanExecuteChangedFor` attributes rather than any explicit `CanSaveUser` predicate.
+- The `catch (BusinessLayerException) { throw; }` block is a no-op — it rethrows exactly as it would without the catch. It documents intent (business errors are expected to bubble) but has no observable effect.
+- `UserService.AddUser` runs `Guard` checks *before* its try block, so invalid input throws a plain `ArgumentException` rather than the `BusinessLayerException` the comment promises "callers only ever see". This class's business-error catch therefore won't catch that path.
+- The `OnFirstNameChanged` body is fully commented out — the old sync-to-`_user` logic remains as dead code.
+- `LoggingService` is imported but never used anywhere in this class.
+- After a successful save the cleared fields immediately re-report "required" errors, so the empty form shows as invalid until the user types again.

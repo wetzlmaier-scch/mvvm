@@ -1,68 +1,58 @@
 ### Purpose
 
-The `UserManagement` directory implements the WPF user management feature using the Model-View-ViewModel (MVVM) pattern and MEF for dependency injection. It groups the data model, presentation logic, inter-component messaging, and design-time helpers into a self-contained module that allows users to list and add new records. The contents belong together because they form a closed loop where the view models consume the model, communicate via defined messages, and rely on a shared composition root to wire everything together.
+The `UserManagement` directory implements the MVVM architecture for a user management feature within a WPF application. It manages the lifecycle of user data display and creation, decoupling the UI from business logic through a strict layering of views, view models, and data models.
+
+The contents belong together as a cohesive module: [UserManagement/ViewModel](UserManagement/ViewModel.md) contains the orchestration logic, [UserManagement/Model](UserManagement/Model.md) holds the display data structures, [UserManagement/Messaging](UserManagement/Messaging.md) defines the communication contract between components, and [UserManagement/Design](UserManagement/Design.md) provides stubs for visual editor support.
 
 ### Software Components
 
-The directory is organized into four distinct layers of responsibility:
+This module follows a standard MVVM pattern with clear separation between logic, data, and design support.
 
-*   **Presentation Logic (`ViewModel/`):** This is the core of the module. It contains the root `UserViewModel` which acts as the MEF composition host, aggregating the child view models `AddUserViewModel` and `ShowUsersViewModel`. `AddUserViewModel` handles form validation and user creation, while `ShowUsersViewModel` manages the observable collection of users and reacts to change events.
-*   **Data Model (`Model/`):** Contains `UserModel`, a lightweight observable class that serves as the binding target for the UI. It decouples the view from underlying service layer entities.
-*   **Messaging Contract (`Messaging/`):** Defines `UserChangedMessage` and `UserChangeType`. These types facilitate loose coupling between sibling view models, allowing `AddUserViewModel` to notify `ShowUsersViewModel` of changes without direct reference.
-*   **Design-Time Support (`Design/`):** Contains mock subclasses of the runtime view models. These are used exclusively by the WPF XAML designer to provide sample data, bypassing MEF which does not run in the design surface.
+*   **View Models**: Located in [UserManagement/ViewModel](UserManagement/ViewModel.md), these classes handle business logic and UI state. `UserViewModel` acts as the module entry point, composing `AddUserViewModel` (for creating users) and `ShowUsersViewModel` (for listing users) via MEF.
+*   **Data Models**: Found in [UserManagement/Model](UserManagement/Model.md), `UserModel` is a lightweight, observable object used for data binding. It exposes user properties like `FirstName` and `LastName` without containing business logic.
+*   **Messaging Contracts**: Defined in [UserManagement/Messaging](UserManagement/Messaging.md), these files establish how components communicate. `UserChangedMessage` wraps `UserModel` data with a `UserChangeType` enum to notify listeners of state changes.
+*   **Design Stubs**: Found in [UserManagement/Design](UserManagement/Design.md), these classes mirror the runtime view model hierarchy to provide sample data for the XAML designer. They exist only for design-time visualization and are ignored at runtime.
 
 ### Relationships
 
-The architecture follows a strict dependency flow centered on MEF composition and event messaging. `UserViewModel` depends on the interfaces of the child view models, which MEF resolves at runtime. `AddUserViewModel` and `ShowUsersViewModel` both depend on `IUserService` for data persistence and retrieval, but they do not reference each other directly. Instead, `AddUserViewModel` sends a `UserChangedMessage` via `WeakReferenceMessenger` upon saving a new user, and `ShowUsersViewModel` listens for this message to update its `Users` collection.
+The components interact through a mix of dependency injection (MEF) and event messaging. The `UserViewModel` serves as the root, injecting `AddUserViewModel` and `ShowUsersViewModel` via `[Import]` attributes. This creates a hierarchical dependency where the parent composes the children.
 
-The `Design` subdirectory exists outside the runtime flow. Its classes inherit from the runtime view models in `ViewModel/` but are only instantiated by the XAML designer via `d:DesignInstance` directives, ensuring the designer has data to render without triggering MEF or service calls.
+Communication between the sibling view models is loose-coupled. `AddUserViewModel` broadcasts a `UserChangedMessage` via `WeakReferenceMessenger` after saving a user. `ShowUsersViewModel` listens for this message to update its list, avoiding a direct dependency on the add logic. Both view models depend on `IUserService` for persistence, while the design stubs depend on the runtime view models to provide preview data.
 
 ```mermaid
 flowchart TD
-    subgraph "UserManagement/ViewModel"
-        UV[UserViewModel]
-        AUV[AddUserViewModel]
-        SUV[ShowUsersViewModel]
+    subgraph "UserManagement"
+        subgraph "ViewModel"
+            UV["UserViewModel"]
+            AV["AddUserViewModel"]
+            SV["ShowUsersViewModel"]
+        end
+        subgraph "Messaging"
+            UCM["UserChangedMessage"]
+        end
+        subgraph "Model"
+            UM["UserModel"]
+        end
+        subgraph "Design"
+            DUV["DesignUserViewModel"]
+        end
     end
 
-    subgraph "UserManagement/Messaging"
-        MSG[UserChangedMessage]
-    end
-
-    subgraph "UserManagement/Model"
-        UM[UserModel]
-    end
-
-    subgraph "UserManagement/Design"
-        DUV[DesignUserViewModel]
-    end
-
-    subgraph "External Services"
-        IUS[IUserService]
-    end
-
-    UV -->|MEF Import| AUV
-    UV -->|MEF Import| SUV
-    
-    AUV -->|Creates| UM
-    SUV -->|Manages Collection of| UM
-    
-    AUV -->|Sends| MSG
-    SUV -->|Listens For| MSG
-    
-    AUV -->|Persists| IUS
-    SUV -->|Fetches| IUS
-
-    DUV -.->|Design-Time Inheritance| UV
-    DUV -.->|Design-Time Instantiation| AUV
-    DUV -.->|Design-Time Instantiation| SUV
+    UV -->|MEF Imports| AV
+    UV -->|MEF Imports| SV
+    AV -->|Broadcasts| UCM
+    UCM -->|Contains| UM
+    SV -->|Listens for| UCM
+    AV -->|Creates| UM
+    SV -->|Displays| UM
+    DUV -.->|Inherits| UV
 ```
 
 ### Rough edges
 
-*   `UserModel` lacks an `Id` property, preventing `ShowUsersViewModel` from correctly handling `Updated` or `Deleted` messages, as it cannot identify which specific user to modify or remove.
-*   `ShowUsersViewModel` throws a `NotImplementedException` for `Updated` and `Deleted` change types, meaning the current messaging contract is only partially implemented and will crash if those events are triggered.
-*   `LoggingService` is injected into both `AddUserViewModel` and `ShowUsersViewModel` but is never used, representing dead code in the dependency graph.
+*   **Unimplemented Message Handlers**: `ShowUsersViewModel` throws `NotImplementedException` for `Updated` and `Deleted` message types, meaning these operations will crash the application if triggered.
+*   **Missing Identifier**: `UserModel` lacks an `Id` property, preventing the view model from correctly locating and modifying existing entries during update or delete operations.
+*   **Manual Design Synchronization**: The design-time stubs in [UserManagement/Design](UserManagement/Design.md) are wired manually with `new` statements rather than reflecting the runtime MEF composition. This requires manual updates to the stubs whenever the runtime view model structure changes, leading to potential drift.
 
 ## Contents
 - [Design/](UserManagement/Design.md)

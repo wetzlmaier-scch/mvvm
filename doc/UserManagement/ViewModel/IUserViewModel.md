@@ -2,36 +2,26 @@
 
 ### Purpose
 
-`IUserViewModel` is the top-level view-model contract for the UserManagement feature. It exists so that host code — the MEF composition root and the WinForms view — can depend on a stable interface for the feature's view-model tree instead of the concrete `UserViewModel` class. Because the module is wired through MEF, the interface is also the lookup key: `UserViewModel` registers itself with `[Export(typeof(IUserViewModel))]`, and consumers resolve it back by this same type.
-
-The interface holds two read-only properties, each exposing one of the feature's two sub-features:
-
-- `AddUserViewModel` (`IAddUserViewModel`) — the child view model for creating a user (name fields, `SaveUserCommand`, `SaveUserAsync()`).
-- `ShowUsersViewModel` (`IShowUsersViewModel`) — the child view model for listing the active users (`Users` collection, `LoadedCommand`, `OnLoadedAsync()`).
-
-It is a façade: the interface itself carries no state or behaviour, only the composition root of the feature's view-model hierarchy.
+`IUserViewModel` is the top-level view-model contract for the UserManagement feature. It exists so host code can ask the MEF composition container for "the user management feature as a whole" without knowing which concrete class fulfils it. The interface declares exactly two read-only properties — `IAddUserViewModel AddUserViewModel` and `IShowUsersViewModel ShowUsersViewModel` — making the contract a facade over the two child screens of the feature: adding a user and listing users.
 
 ### Role in the Codebase
 
-Inside `UserManagement/ViewModel`, the folder follows an interface/class pair pattern per view model (`IAddUserViewModel`/`AddUserViewModel`, `IShowUsersViewModel`/`ShowUsersViewModel`, and this interface with `UserViewModel`). This file is the "shell" contract of that group: the only interface that names both children, so it is what the rest of the application reaches for first.
-
-If it were removed, `UserViewModel` would no longer be resolvable as the feature entry point: `ConsoleApp1/Program.cs` calls `container.GetExportedValues<IUserViewModel>().SingleOrDefault()` at startup, and `WinFormsApp1/View/UserForm.cs` casts its `DataContext` to `IUserViewModel?` in `SetupBindings`. Both hosts and the export attribute on `UserViewModel` reference this type directly.
+It is the entry-point contract of the `UserManagement` module, sitting alongside the concrete `UserViewModel` (same folder) that implements it. The composition root resolves the feature by this interface: `ConsoleApp1/Program.cs` builds a MEF container and calls `container.GetExportedValues<IUserViewModel>().SingleOrDefault()`, throwing `IUserViewModel not found.` if nothing is exported. In the WinForms host, `WinFormsApp1/View/UserForm.cs` overrides the `DataContext` setter and casts the received value to `IUserViewModel` to wire up its data bindings. Remove this interface and both of those resolution paths break — the feature would no longer be addressable by name from the outside.
 
 ### Relationships
 
-- **Implemented by** `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`), the only implementation. That class extends `MainViewModelBase` and satisfies the two properties via `[Import]`ed properties; it also carries a second export, `[Export(typeof(IMainViewModel))]`, so the same instance can be resolved as a generic main view model (used by `WpfApp1`'s `DefaultModuleController`).
-- **Depends on** `IAddUserViewModel` and `IShowUsersViewModel`, both defined in the same folder. The interface has no other dependencies; the `using System.ComponentModel.Composition;` directive in this file is unused — no MEF attributes appear on the interface itself.
-- **Consumed by**:
-  - `ConsoleApp1/Program.cs` — resolves the export and drives the feature through `userViewModel.AddUserViewModel` (sets `FirstName`/`LastName`, calls `SaveUserAsync()` in a loop) and `userViewModel.ShowUsersViewModel` (`OnLoadedAsync()`, then iterates `Users`).
-  - `WinFormsApp1/View/UserForm.cs` — receives it as `DataContext` and binds its controls through the two child view models.
+- **Implementor:** `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`) implements the interface and registers itself with `[Export(typeof(IUserViewModel))]` (it is additionally exported as `IMainViewModel` so the shell can resolve it as the main window's view model). Its two properties are MEF `[Import]`s, which the interface exposes as read-only gets.
+- **Member types:** `IAddUserViewModel` and `IShowUsersViewModel`, both defined in the same folder. `IUserViewModel` only exposes them for retrieval; the actual capability contracts (e.g. `SaveUserAsync()`, `Users`) live on those two interfaces.
+- **Callers:** anything that needs the feature entry point by contract — the console composition root and the WinForms `UserForm`, which reads `AddUserViewModel` and `ShowUsersViewModel` to bind text boxes and the user list.
+- The `using System.ComponentModel.Composition;` import in this file is unused; it appears in the sibling files where `[Export]`/`[Import]` are actually applied.
 
 ### Behavior & Details
 
-There is no behaviour to trace — the interface has exactly two get-only properties and no methods, events, or inherited members. The notable contract points:
+The interface contains no methods, events, or logic — only the two properties. Two conventions are worth knowing:
 
-- The properties are read-only here, but in `UserViewModel` they are `[Import]`ed with public setters (`{ get; set; } = null!`). MEF satisfies them at composition time; if no matching export exists, MEF fails to compose the container rather than the property staying null.
-- Both property names match the property names on `UserViewModel` exactly, which is what allows MEF to import against the concrete class while the interface stays free of any MEF or base-type coupling.
+- **Read-only on the contract, writable underneath.** The interface declares get-only properties; the implementor `UserViewModel` has `{ get; set; }` so MEF can inject the child view models. Consumers should treat both properties as immutable references to already-composed objects, never replace them.
+- **Single export expected.** `Program.cs` uses `SingleOrDefault()` when resolving, so the design assumes exactly one `IUserViewModel` export exists in the container. A second class carrying `[Export(typeof(IUserViewModel))]` would make that call throw an `InvalidOperationException` at startup rather than silently picking one.
 
 ### Rough edges
 
-The `using System.ComponentModel.Composition;` at the top of this file is never used by any member in the interface — a leftover, presumably copied from the implementation file.
+The `using System.ComponentModel.Composition;` directive is dead in this file — no MEF attribute is applied here.

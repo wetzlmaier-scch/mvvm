@@ -1,67 +1,60 @@
 ### Purpose
 
-The `Common` directory is the shared utility assembly for the application suite, containing stateless helper classes and configuration constants used by the various host applications (`WinFormsApp1`, `Mvvm.Wpf`, and `ConsoleApp1`). Its primary responsibility is to centralize cross-cutting concerns—specifically dependency injection bootstrapping, system diagnostics, reflection utilities, and platform-specific imaging conversions—so that host applications do not need to duplicate this boilerplate logic.
+The `Common` directory serves as the shared foundation for the solution's host applications and MVVM libraries. It consolidates cross-cutting utilities that are consumed across different presentation layers (WinForms, WPF, and Console) to ensure consistent behavior.
 
-The contents belong together because they all operate at a low level, providing foundational infrastructure that is independent of specific UI frameworks or business logic. Each subdirectory encapsulates a distinct technical domain, from MEF composition to GDI+ interop, allowing the hosts to reference a single `Common` project for all their shared technical needs.
+Its contents belong together because they are low-level, stateless helpers that do not depend on specific business logic or user interface frameworks. By centralizing concerns like dependency composition, assembly reflection, and platform-specific conversions here, the codebase avoids duplicating foundational logic across each individual application project.
 
 ### Software Components
 
-The components in this directory are organized into distinct functional groups, each serving a specific technical need for the host applications.
+The directory is organized into five distinct functional areas, each containing static utility classes:
 
-*   **Dependency Injection Bootstrap**: The `Composition/` subdirectory contains `CompositionHelper`, which is responsible for initializing the Module-Extension Framework (MEF) container. It scans the output directory for assemblies and builds the catalog that hosts use to resolve `IModuleController` exports.
-*   **Process Termination Codes**: The root file `ExitCodes.cs` defines a static class of constants (`Ok`, `Error`, `InsufficientPrivileges`) that standardize the exit codes returned by the host applications to the operating system. This ensures a consistent vocabulary for success and failure across WinForms, WPF, and Console hosts.
-*   **Reflection Utilities**: The `Reflection/` subdirectory houses `AssemblyHelper`, a static class that provides methods to inspect loaded assemblies. It handles retrieving file paths, version metadata, and embedded icons, abstracting away the complexity of `System.Reflection` APIs.
-*   **Diagnostics and Validation**: The `Diagnostics/` subdirectory contains `ExtendedGuard`, which offers specific precondition checks for collection membership (`Contains`, `NotContains`). This supplements the standard `Guard` library with logic tailored for ViewModel registration scenarios.
-*   **WPF Debugging Tools**: The `Converter/` subdirectory provides `DebugConverter`, a value converter intended for debugging WPF data bindings. It allows developers to inspect binding values in the debugger, though it is currently dormant in the codebase.
-*   **Platform Imaging Interop**: The `Windows/` subdirectory (specifically `Windows/Media/Imaging`) contains `BitmapSourceHelper`. This class bridges the gap between GDI+ and WPF imaging systems, converting `System.Drawing.Bitmap` objects into WPF `BitmapSource` types for use in the UI.
+*   **Composition**: The `CompositionHelper` in `Common/Composition` is the startup bootstrap for the application. It handles assembly discovery and builds the MEF (Managed Extensibility Framework) dependency injection container used by all hosts.
+*   **Reflection**: `AssemblyHelper` in `Common/Reflection` centralizes access to assembly metadata (version, company, icon) and defines which file extensions are valid assemblies. It acts as a dependency sink for the composition root.
+*   **Diagnostics**: `ExtendedGuard` in `Common/Diagnostics` provides static methods for validating collection membership, specifically supporting the `Mvvm/ViewModelBase` for registering and unregistering child view models.
+*   **Windows**: `BitmapSourceHelper` in `Common/Windows` bridges GDI+ and WPF imaging systems, allowing for the conversion of bitmaps and loading of images into WPF-compatible formats.
+*   **Converter**: `DebugConverter` in `Common/Converter` implements the WPF `IValueConverter` interface to facilitate runtime debugging of data bindings by logging values and breaking execution.
+
+Additionally, `Common/ExitCodes.cs` defines the standard process exit codes (`Ok`, `Error`, `InsufficientPrivileges`) returned by the executable hosts.
 
 ### Relationships
 
-The dependency flow in `Common` is strictly unidirectional: host applications depend on these components, but the components within `Common` rarely depend on each other, with one notable exception.
+The components within `Common` have minimal internal coupling but serve as critical dependencies for the host applications and MVVM infrastructure.
 
-The primary internal dependency exists between `Composition/` and `Reflection/`. `CompositionHelper` relies on `AssemblyHelper` to determine valid file extensions (`.dll`, `.exe`) and to locate the application directory when scanning for MEF assemblies. This makes `AssemblyHelper` a foundational leaf node that supports the MEF bootstrapping process.
+`CompositionHelper` is the most significant dependency, as the hosts (`WinFormsApp1`, `Mvvm.Wpf`, `ConsoleApp1`) rely entirely on it to initialize their service containers. It depends on `AssemblyHelper` to determine which files in the output directory are valid assemblies to load. In turn, `MainViewModelBase` in the MVVM layer depends on both `AssemblyHelper` (for loading the application icon) and `BitmapSourceHelper` (for converting that icon into a WPF `BitmapSource`).
 
-All other components in `Common` are independent leaf nodes. `ExitCodes`, `ExtendedGuard`, `DebugConverter`, and `BitmapSourceHelper` do not reference other parts of the `Common` project. They are consumed directly by the host applications:
-*   The hosts (`WinFormsApp1`, `Mvvm.Wpf`) call `CompositionHelper` during startup to build their DI containers.
-*   `Mvvm.Wpf`'s `MainViewModelBase` uses both `AssemblyHelper` (for icons) and `BitmapSourceHelper` (for image conversion) during initialization.
-*   `Mvvm`'s `ViewModelBase` uses `ExtendedGuard` for registration logic.
-
-The following diagram illustrates the internal dependency within `Common` and how the hosts interact with these shared components.
+The hosts also depend directly on `ExitCodes` to standardize their termination signals. While `ExtendedGuard` and `DebugConverter` are used by specific MVVM and WPF components respectively, they are leaf nodes with no internal dependencies.
 
 ```mermaid
 flowchart TD
-    subgraph "Common Assembly"
-        CH["CompositionHelper<br/>(MEF Bootstrap)"]
-        AH["AssemblyHelper<br/>(Reflection Utilities)"]
-        EC["ExitCodes<br/>(Constants)"]
+    subgraph "Common Directory"
+        CH["CompositionHelper<br/>(Composition)"]
+        AH["AssemblyHelper<br/>(Reflection)"]
         EG["ExtendedGuard<br/>(Diagnostics)"]
-        DC["DebugConverter<br/>(WPF Debugging)"]
-        BSH["BitmapSourceHelper<br/>(Imaging Interop)"]
+        BSH["BitmapSourceHelper<br/>(Windows)"]
+        DC["DebugConverter<br/>(Converter)"]
+        EC["ExitCodes<br/>(ExitCodes.cs)"]
     end
 
-    subgraph "Host Applications"
-        WF["WinFormsApp1"]
-        WPF["Mvvm.Wpf"]
-        CON["ConsoleApp1"]
+    subgraph "External Consumers"
+        Hosts["Host Applications<br/>(WinForms, WPF, Console)"]
+        MVVM["Mvvm Layer<br/>(ViewModelBase, MainViewModelBase)"]
     end
 
-    %% Internal Dependencies
-    CH -->|Uses for file paths & extensions| AH
-
-    %% External Consumers
-    WF -->|Calls CreateContainer| CH
-    WF -->|Returns Exit Code| EC
-    WPF -->|Calls CreateContainer| CH
-    WPF -->|Returns Exit Code| EC
-    WPF -->|Uses for Icons| AH
-    WPF -->|Uses for Icon Conversion| BSH
-    WPF -->|Uses in ViewModels| EG
-    CON -->|Calls CreateContainer| CH
+    Hosts -->|Bootstraps DI Container| CH
+    Hosts -->|Returns Process Codes| EC
+    CH -->|Reads Valid Extensions| AH
+    MVVM -->|Validates Child VMs| EG
+    MVVM -->|Loads App Icon| AH
+    MVVM -->|Converts Icon to BitmapSource| BSH
+    MVVM -->|Uses for Debugging| DC
 ```
 
 ### Rough edges
 
-`InsufficientPrivileges` in `ExitCodes.cs` is defined but never referenced by any host, making it dead code. Additionally, `ExtendedGuard` in `Diagnostics/` accepts a `name` parameter for error messages but hard-codes the string literals in the exception, rendering the parameter ineffective for diagnosing which argument failed.
+*   `ExitCodes.InsufficientPrivileges` is defined but currently unused by any host application in the repository.
+*   `DebugConverter` is referenced in `UserView.xaml` but the binding is commented out, rendering the component dormant in the active runtime.
+*   `BitmapSourceHelper.LoadBitmap` leaks a native GDI handle on every call, which is a risk if the method is ever used in a loop.
+*   `ExtendedGuard` exception messages do not correctly interpolate the argument name, reducing the diagnostic value of the errors thrown.
 
 ## Contents
 - [ExitCodes.cs](Common/ExitCodes.md)

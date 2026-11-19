@@ -1,24 +1,35 @@
 # WpfApp1/App.xaml
 
+The WPF host's application object: `App.xaml` is the XAML definition (root element, no application-level resources), and `App.xaml.cs` is its code-behind (an empty `partial` class plus a `SupportedOSPlatform` attribute). Together the two members compile into a single type, `WpfApp1.App`, which derives from `Mvvm.Wpf.MvvmApplication`.
+
 ### Purpose
 
-This file is the WPF application root definition. It declares the application object as a `MvvmApplication` (from the `Mvvm.Wpf` assembly) instead of the plain `System.Windows.Application`, so that the app's startup is driven by the Mvvm library's module-discovery and composition logic rather than WPF's default startup.
+`App` exists so the WPF host can boot the solution's modular architecture with zero code of its own. All real work — building the MEF container, discovering modules, driving their lifecycle, handling crashes — lives in the base class `MvvmApplication` (in `Mvvm.Wpf/MvvmApplication.cs`). This group is therefore a pure instantiation of that bootstrap: the WPF runtime creates `App` at startup, and the inherited `OnStartup`/`OnExit` do everything.
 
 ### Role in the Codebase
 
-In `WpfApp1`, this XAML file is the markup half of the `App` class. Its paired code-behind, `WpfApp1/App.xaml.cs`, contains the other half: `public partial class App : MvvmApplication`. The `x:Class="WpfApp1.App"` attribute binds the two together — the XAML instantiates `App`, and the C# partial class supplies the empty body. `App` is the WPF entry point of the application (the `Application`-derived type WPF locates at startup via the generated `Main`), so removing or retargeting this file breaks the app's startup entirely.
-
-There is no application-scope content here: `MvvmApplication.Resources` is an empty element, and notably no `StartupUri` is set. The first window is not opened by this file at all.
+`App` is the WPF application entry point. It sits at the root of the `WpfApp1` project alongside `App.config` (holds the SQL connection string), `AssemblyInfo.cs` (theme-info attribute), and the `Controller/` and `View/` folders. Because `App` itself contains no members, the project's actual startup logic lives one level down in `DefaultModuleController` (`WpfApp1/Controller/DefaultModuleController.cs`), which `MvvmApplication` will discover via MEF. Removing this group breaks the WPF host's compilation and means the host no longer has an `Application` subclass, so no container is built and no module ever runs.
 
 ### Relationships
 
-- **`MvvmApplication`** (defined in `Mvvm.Wpf/MvvmApplication.cs`) is the root element's base type and the real workhorse. It inherits from `System.Windows.Application` and, in `OnStartup`, builds a `CompositionContainer` that scans for assemblies, resolves every exported `IModuleController`, then calls `Initialize()` on each followed by `Run()`. `OnExit` shuts the controllers down in reverse and disposes the container. `MvvmApplication` is a generic C# primary-constructor type (parameterized by module/ignore assembly lists and a `SearchOption`); instantiating it through XAML like this resolves to its parameterless constructor.
-- **`WpfApp1.App`** (`App.xaml.cs`) is the class this XAML instantiates. It adds nothing itself, so the app runs entirely on `MvvmApplication`'s inherited behavior.
-- The startup flow then lands in `WpfApp1/Controller/DefaultModuleController.cs`, which is the single `IModuleController` export the composition container discovers in this project. Its `Run()` is what actually shows the first window (`UserView`, via the injected `IMainView`), and `OnExit` triggers its `Shutdown()`.
-- `App.xaml` itself is not referenced by any other code — WPF's generated entry point consumes it at startup.
+- **`Mvvm.Wpf.MvvmApplication`** (`Mvvm.Wpf/MvvmApplication.cs`) — the base class. `MvvmApplication` extends `System.Windows.Application` and, in `OnStartup`, builds a MEF `CompositionContainer` via `CompositionHelper.CreateCompositionContainer` with an **empty** module-assembly list and **empty** ignore list, then resolves `IModuleController` exports, calls `Initialize()` on each, then `Run()` on each; `OnExit` calls `Shutdown()` on each (in reverse) and disposes the container. It also installs `DispatcherUnhandledException` and `AppDomain.UnhandledException` handlers. Because `MvvmApplication`'s `OnStartup` is `protected override` (not `sealed`), the empty `App` class inherits all of this without overriding anything.
+- **`WpfApp1.Controller.DefaultModuleController`** — the module that MEF will actually construct and run for this host; it is the single `IModuleController` export in the project.
+- **`Common.Composition.CompositionHelper`** — invoked indirectly through `MvvmApplication` to scan every loadable `.dll` next to the entry assembly and build the aggregate catalog.
+
+Nothing else in the solution references `App` directly; the WPF runtime instantiates it through the generated entry point.
 
 ### Behavior & Details
 
-- The `xmlns:mvvm` namespace maps to `clr-namespace:Mvvm.Wpf;assembly=Mvvm.Wpf`, which is how the XAML resolves `MvvmApplication` from the library assembly.
-- The file contains no `ShutdownMode`, `StartupUri`, resources, styles, or event handlers. Every runtime behavior a reader might expect at the "App" level — exception hooks, module discovery, the main window lifecycle — lives in the inherited `MvvmApplication.OnStartup`/`OnExit` and in the `IModuleController` implementations.
-- One caveat: `MvvmApplication` declares its constructors around array parameters, and XAML here instantiates it without any attached properties or parameters. Which constructor path this resolves to (and therefore what `ModuleAssemblies`/`IgnoreAssemblies` end up being) is not determinable from this file alone; the library's `SearchOption`-defaulted parameterless constructor takes `moduleAssemblies: []`, implying an assembly-directory scan.
+- The XAML root element is declared as `mvvm:MvvmApplication` (with `x:Class="WpfApp1.App"`), not `Application`. That is why the `partial class App` in the code-behind can legally declare `: MvvmApplication` — the XAML compiler generates the class against the root element's declared type, and the code-behind adds the `partial` half. The `<mvvm:MvvmApplication.Resources>` element is empty, so the app contributes no application-level resources; views and dialogs must define their own.
+- The code-behind contains only the `[assembly: SupportedOSPlatform("windows")]` attribute (a trim/analyzer hint for .NET's platform-conditional API analysis) and the empty class body. There is no constructor, no overridden method, no field.
+- At runtime, when `App` is constructed:
+  1. `Application`'s base constructor runs.
+  2. `MvvmApplication.OnStartup` fires: it wires the exception handlers, builds the MEF container (scanning the output directory), resolves `IModuleController` exports — which for this host yields exactly `DefaultModuleController` — and calls `Initialize()` then `Run()` on it. `Run()` calls `MainView.Show()`, displaying `WpfApp1.View.UserView`.
+  3. On two failure paths inside `OnStartup` — a `ReflectionTypeLoadException` during export resolution, or a zero-module resolution — the app shows an error message and shuts down with `ExitCodes.Error`.
+  4. `OnExit` shuts down the controllers in reverse and disposes the container.
+- Any unhandled exception during the app's lifetime is caught by the inherited handlers: the dispatcher exception is marked handled (the app keeps running), and both paths write to the trace log; a non-terminating exception additionally shows a German-language error dialog ("Es ist ein Fehler aufgetreten.").
+
+### Rough edges
+
+- The base class `MvvmApplication` is generic over which modules to load (it accepts `moduleAssemblies` and `ignoreAssemblies`), but `App` uses the parameterless path, so it loads *every* loadable assembly next to the entry assembly. Any `IModuleController` export in any loaded assembly will be started in this host; there is no way for `App` to narrow that set without overriding `OnStartup`.
+- `App` also never uses `App.config`'s `ConnectionString` entry itself — that value is consumed by the data-access layer at runtime, not by this group.

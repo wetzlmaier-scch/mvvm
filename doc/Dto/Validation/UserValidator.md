@@ -1,24 +1,29 @@
+# Dto/Validation/UserValidator.cs
+
 ### Purpose
 
-`Dto/Validation/UserValidator.cs` defines `UserValidator`, a FluentValidation rule set that encodes the one user-data rule in this codebase: a user's `FirstName` and `LastName` must both be non-empty. It exists so that any view model dealing with user data can enforce this rule through the shared `ValidatableViewModelBase<T>` plumbing instead of each one re-checking the properties by hand.
+`UserValidator` is the FluentValidation rule set that encodes the application's only user-data rule: a user's `FirstName` and `LastName` must both be non-empty. It exists so that validation of user data lives in one place, in the `Dto` project, rather than being scattered across view models or UI code.
 
 ### Role in the Codebase
 
-This is the only validator in the `Dto/Validation` directory, and the `Dto` project's sole external dependency (FluentValidation) exists for it. It sits at the boundary between the data model (`Dto`) and the presentation layer: the rule is defined once next to the `IUser` contract, and the UI layer consumes it. If it were removed, `AddUserViewModel` (its known consumer) could no longer be constructed with a validator, and first/last-name emptiness would have to be checked manually before `UserService.AddUser` is called.
+It is the single component in the `Dto/Validation/` directory and the only FluentValidation validator in this codebase. It is a plain rule-set class with no state — the rules are fixed and fully defined in the constructor. Nothing else in the `Dto` project depends on it; it is a leaf that UI-layer view models consume. If it were removed, `AddUserViewModel` (the known caller) could no longer enforce non-empty names, since the `IUser` interface itself imposes no nullability or other constraint.
 
 ### Relationships
 
-- **`IUser`** (`Dto/IUser.cs`) — the type being validated. It is a small interface defined in the same `Dto` project with exactly two properties, `FirstName` and `LastName`, so the two rules in the constructor cover the entire contract.
-- **`AbstractValidator<T>`** — the base class comes from the external FluentValidation library (referenced as version 12.1.1 in the `Dto` project). Nothing is overridden; the rule set is declared declaratively in the constructor.
-- **`AddUserViewModel`** (`UserManagement/ViewModel/AddUserViewModel.cs`) — the known caller. It passes `new UserValidator()` to its primary constructor, forwarded to `ValidatableViewModelBase<IUser>` (`Mvvm/ValidatableViewModelBase.cs`), which holds the `IValidator<IUser>` and runs it via `ValidateAllProperties` / `ValidateProperty`. Because that base implements `INotifyDataErrorInfo`, the messages from this validator surface directly in the UI.
+- **Base type:** `AbstractValidator<IUser>` from the external FluentValidation library. The class inherits the validation machinery and supplies only the rules.
+- **Validation target:** `IUser`, defined in `Dto/IUser.cs`. The interface exposes exactly `FirstName` and `LastName`, and this validator targets precisely those two properties — validation operates on the interface shape, so any `IUser` implementation is validated identically.
+- **Caller:** `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`) constructs `new UserValidator()` and passes it to `ValidatableViewModelBase<IUser>` (`Mvvm/ValidatableViewModelBase.cs`), whose `ValidateAllProperties`/`ValidateProperty` methods run the validator and surface `INotifyDataErrorInfo` errors to the UI. `UserViewModelTest` in `TestProject1` exercises the behaviour end-to-end through that view model.
 
 ### Behavior & Details
 
-The constructor declares exactly two rules:
+The constructor registers two rules:
 
 - `RuleFor(x => x.FirstName).NotEmpty().WithMessage("Firstname is required.")`
 - `RuleFor(x => x.LastName).NotEmpty().WithMessage("Lastname is required.")`
 
-`NotEmpty()` rejects both `null` and the empty string. Since callers invoke FluentValidation's `Validate()` through the base class, the validator itself is stateless and reusable — each `AddUserViewModel` builds its own instance. The base class calls `validator.Validate(obj)` (all properties on save) and `validator.Validate(obj, options => options.IncludeProperties(propertyName))` (single property on change), so the `WithMessage` strings here are exactly what the user sees in error UI.
+`NotEmpty()` fails on both `null` and empty strings (`string.Empty`), but **not** on whitespace-only strings. A user typed as `"   "` passes this validator. Error messages are the literals above, and they reach the UI through `ValidatableViewModelBase`'s `GetErrors`/`HasErrors`.
 
-One rough edge: the error messages read "Firstname is required." and "Lastname is required." — the casing matches the original literal strings, which differ slightly from the property names (`FirstName`/`LastName`), and the wording says "required" for a rule that also rejects whitespace-only or empty input.
+### Rough edges
+
+- The `NotEmpty` rule means whitespace-only names are valid per the validator, yet `TestProject1/UserViewModelTest` includes whitespace cases that assert rejection. Those assertions pass only if a trim or whitespace rule lives somewhere not visible in this file (none is present here), so the test and this validator do not line up as written.
+- The message spelling is inconsistent with the property names: "Firstname"/"Lastname" (lowercase "name") versus `FirstName`/`LastName`.

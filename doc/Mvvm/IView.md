@@ -1,30 +1,40 @@
 # `Mvvm/IView.cs`
 
-## Purpose
+### Purpose
 
-This file defines `IView`, the root of the view-side contract in this repository's hand-rolled MVVM framework. Its single member, `object? DataContext { get; set; }`, is a platform-neutral way to attach a view model to a view: the view model travels as a plain `object?` rather than a typed reference, because `IView` must be implementable by both WPF (`Window`) and WinForms (`Form`), and neither UI framework's base type can reference the other.
+This file defines `IView`, the root of the view-side contract in the `Mvvm` project — the shared, framework-agnostic core of this repository's hand-rolled MVVM setup. Its single member, `object? DataContext { get; set; }`, is the platform-neutral way to attach a view model to a window, so that controllers can wire up a view without knowing whether the host is a WPF `Window` or a WinForms `Form`.
 
-## Role in the codebase
+It is a two-line interface. Everything worth knowing about it is context: what extends it, and who assigns through it.
 
-`IView` is the base of the view interface hierarchy in the `Mvvm` project (the framework-agnostic core shared by the WPF and WinForms apps):
+### Role in the Codebase
 
-- `IDialogView<TDialogResult>` (`Mvvm/IDialogView.cs`) extends it and adds `DialogResult`, `Show()`, `Close()`, and `Closing`/`Closed` events.
-- `IMainView<TDialogResult, TDimension>` (`Mvvm/IMainView.cs`) extends `IDialogView` and adds `Left`/`Top`/`Width`/`Height`.
+`IView` is the bottom rung of the view interface hierarchy in `Mvvm`:
 
-Every framework-participating view in the repository derives from `IView` through one of those. It is a shared contract, not an implementation: removing it breaks the hierarchy and therefore every view class and the module controllers that compose them.
+- `IView` (`Mvvm/IView.cs`) — declares `DataContext`.
+- `IDialogView<TDialogResult>` (`Mvvm/IDialogView.cs`) — adds `DialogResult`, `Closing`/`Closed`, `Show()`, `Close()`.
+- `IMainView<TDialogResult, TDimension>` (`Mvvm/IMainView.cs`) — adds the four geometry properties.
 
-## Relationships
+Both concrete main windows in the solution — `UserView` (`WpfApp1/View/UserView.xaml.cs`) and `UserForm` (`WinFormsApp1/View/UserForm.cs`) — reach `IView` by implementing `IMainView`. No type in the repository implements `IView` directly.
 
-- **Implementers (through `IMainView`):** `UserForm` (`WinFormsApp1/View/UserForm.cs`) implements `IMainView<DialogResult, int>`; `UserView` (`WpfApp1/View/UserView.xaml.cs`) implements `IMainView<bool?, double>`. Both are exported via MEF (`[Export(typeof(IMainView<...>))]`) and composed by each app's `DefaultModuleController`.
-- **The point of assignment:** each app's `DefaultModuleController` (`WinFormsApp1/Controller/DefaultModuleController.cs`, `WpfApp1/Controller/DefaultModuleController.cs`) does `MainView.DataContext = mainViewModel;` in its constructor. This is the framework's mechanism for handing the view model to the view.
+It is a pure contract with no implementation. Removing it collapses the hierarchy and breaks both view implementations and the two `DefaultModuleController` classes that assign `MainView.DataContext`.
 
-## Behavior & Details
+### Relationships
 
-There is no behavior in this file — it is a single-member interface with no default implementations. What matters is how implementations use that one member:
+- **Extenders:** `IDialogView<TDialogResult>` (`Mvvm/IDialogView.cs`) is the only direct inheritor; `IMainView` reaches `IView` through it.
+- **Implementors:** `UserView` and `UserForm`, via `IMainView`. Both are `[Export]`-ed MEF parts imported by their project's `DefaultModuleController`.
+- **Callers:** `WpfApp1/Controller/DefaultModuleController.cs` and `WinFormsApp1/Controller/DefaultModuleController.cs` each do `MainView.DataContext = mainViewModel;` in their constructor, handing the imported `IMainViewModel` to the view through this property.
+- **Framework overlap:** In WPF, `DataContext` is inherited from `System.Windows.FrameworkElement` and the interface member is satisfied implicitly. In WinForms, `Form` has no such member, so `UserForm` explicitly overrides `Control.DataContext` (`object`-typed) and uses it to trigger its manual `DataBindings` setup in the setter.
 
-- `DataContext` is untyped and nullable. Nothing validates the type at the contract level; a wrong type surfaces only inside the implementing view.
-- In WPF, `DataContext` is inherited from `Window`/`UIElement`, so the property already exists. In WinForms, `UserForm` explicitly `override`s `Control.DataContext` and uses the setter as its setup hook: it stores the value via `base.DataContext = value` and calls `SetupBindings((IUserViewModel?)value)` to wire up its `DataBindings` and event handlers. So "setting `DataContext`" is where a view actually learns it has a view model.
+### Behavior & Details
 
-## Rough edges
+There is no logic in an interface — the interesting behaviour is in how the contract is honoured by the two hosts:
 
-- `IView`'s `DataContext` collides with members that already exist on `WinForms.Control` and WPF's `UIElement` (with slightly different signatures, `object?` vs `object`). Implementations therefore inherit or override same-named members from different base classes — `UserForm` must explicitly `override` the WinForms version. Whether the interface member is *implemented* or *overridden* is determined by whichever UI framework's base type the implementer chooses, which is invisible to anyone reading `IView` alone.
+- **WPF (`UserView`):** setting `DataContext` is just `Window.DataContext` assignment, after which WPF's binding engine does the rest. The interface member is satisfied with no extra code.
+- **WinForms (`UserForm`):** the `DataContext` setter does double duty. It stores the value, then calls `SetupBindings((IUserViewModel?)value)`, which builds all `DataBindings`, wires `CollectionChanged`/`ErrorsChanged` handlers, and hooks the Save button and form `Load` event. In other words, assigning `DataContext` is what activates the entire WinForms binding layer — the controller's one line `MainView.DataContext = mainViewModel` is the only trigger.
+
+The nullable `object?` type keeps the property compatible with both `Control.DataContext` (`object`) and `Window.DataContext` (`object`) without forcing either side into a cast.
+
+### Rough edges
+
+- In WPF the interface member is satisfied "for free" by `Window.DataContext`, while in WinForms it lands on an override of `Control.DataContext` whose documented purpose is unrelated (arbitrary tag storage). The interface therefore aliases two framework members with different original meanings.
+- The setter contract is not uniform: on the WPF side it is a plain assignment, on the WinForms side it performs substantial side-effect work (building bindings). A future view implementor reading only `IView` would not know the setter is expected to be the activation point.

@@ -1,37 +1,34 @@
-# `SessionFactoryBuilder.cs`
-
-**Path:** `DataAccessLayer.Hibernate/SessionFactoryBuilder.cs`
-
 ### Purpose
 
-`SessionFactoryBuilder` is a static helper that builds an NHibernate `ISessionFactory` from a connection string and a list of mapping-assembly names. Its intent is to centralize the Fluent NHibernate configuration in one place. In practice it is currently dead code: `BuildSessionFactory` is not called anywhere in the repository, and the same configuration logic is duplicated inline in the constructor of `HibernateRepositoryFactory<TKey>`.
+**`DataAccessLayer.Hibernate/SessionFactoryBuilder.cs`**
+
+`SessionFactoryBuilder` is a static helper whose job is to build an NHibernate `ISessionFactory` from a connection string and a list of mapping-assembly names. It exists to centralize the Fluent NHibernate bootstrap: pick a SQL Server dialect, load the Fluent mappings from each given assembly, auto-update the database schema to match those mappings, and then construct the (expensive) session factory that everything else in the data layer uses.
+
+The single public method is `BuildSessionFactory(string connectionString, string[] mappingAssemblies)`, which returns the `ISessionFactory`.
 
 ### Role in the Codebase
 
-It sits in the `DataAccessLayer.Hibernate` project alongside `HibernateRepository<TKey>`, `HibernateRepositoryFactory<TKey>`, `HibernateUnitOfWork`, and the `IModelContext` / `ModelContextBase` types. The class that actually does bootstrapping in the running application is `HibernateRepositoryFactory<TKey>` (in `HibernateRepositoryFactory.cs`), whose constructor is invoked from `RepositoryFactory` in the `BusinessLayer`. `SessionFactoryBuilder` is a parallel, unused copy of that bootstrapping.
+It lives in the `DataAccessLayer.Hibernate` project next to `HibernateRepository<TKey>`, `HibernateRepositoryFactory<TKey>`, `HibernateUnitOfWork`, and the `IModelContext` / `ModelContextBase` types.
+
+It is effectively a second, parallel implementation of the same bootstrap that `HibernateRepositoryFactory<TKey>` performs in its constructor — same dialect (`MsSql2012`), same driver (`MicrosoftDataSqlClientDriver`), same `ShowSql()`, same `SchemaUpdate` execution, same `Assembly.Load` per mapping assembly. The only callers of the repository's session-factory logic are the `HibernateRepositoryFactory<TKey>` path; `SessionFactoryBuilder.BuildSessionFactory` is not called anywhere else in the repository. Its `mappingAssemblies` parameter takes *names* of assemblies rather than `Assembly` instances, which fits the shape of the values stored by `IModelContext` / `ModelContextBase` (a connection string plus a list of assembly names), so the intended caller is whatever code reads those values and wants a ready-made factory without going through the repository factory.
 
 ### Relationships
 
-- **NHibernate / FluentNHibernate / `Microsoft.Data.SqlClient`** (external): the ORM and ADO.NET driver. `Fluently.Configure()` from FluentNHibernate drives the whole configuration; `MicrosoftDataSqlClientDriver` is NHibernate's driver wrapper around the `Microsoft.Data.SqlClient` assembly.
-- **`IModelContext`** (`DataAccessLayer.Hibernate/IModelContext.cs`) / **`ModelContextBase`** (`DataAccessLayer.Hibernate/ModelContextBase.cs`): the abstract base class exposes `ConnectionString` and `MappingAssemblies`, exactly the two inputs `BuildSessionFactory` takes. `SessionFactoryBuilder` is not wired to that base class today; `HibernateRepositoryFactory` is.
-
-The intended caller would be the same as `HibernateRepositoryFactory`'s — a composition root that holds an `IModelContext` and needs an `ISessionFactory`. No such caller exists in the repository right now.
+- **Fluent NHibernate / NHibernate** (external libraries): `Fluently.Configure()`, `MsSqlConfiguration.MsSql2012`, `MicrosoftDataSqlClientDriver`, `ISessionFactory`, and `SchemaUpdate` all come from NHibernate and Fluent NHibernate.
+- **`IModelContext` / `ModelContextBase`** (same project): the likely source of the two inputs — a `ConnectionString` and an array of mapping-assembly names.
+- **`Entity.Hibernate`-style mapping assemblies** (other projects): the assemblies passed in are scanned for `ClassMap<T>` subclasses via `FluentMappings.AddFromAssembly`, so the actual entity mappings live in those assemblies, not here.
+- **`HibernateRepositoryFactory<TKey>`** (same project): duplicates this exact configuration; only the factory's copy is active in the running flow.
 
 ### Behavior & Details
 
-`BuildSessionFactory(string connectionString, string[] mappingAssemblies)`:
-
-1. Builds the database config: `MsSqlConfiguration.MsSql2012` with the given connection string, the `MicrosoftDataSqlClientDriver`, and `ShowSql()` enabled (SQL is logged to the console).
-2. For each name in `mappingAssemblies`, loads the assembly with `Assembly.Load(name)` and registers every Fluent NHibernate mapping in it via `FluentMappings.AddFromAssembly`.
-3. Runs `SchemaUpdate.Execute(false, true)` — NHibernate's auto-update of the schema based on the mappings. `false` means do not perform a drop-and-recreate on startup; `true` means log the DDL.
-4. Returns the result of `.BuildSessionFactory()`.
-
-Differences worth knowing versus the sibling `HibernateRepositoryFactory<TKey>` constructor:
-
-- **Order of operations:** here `SchemaUpdate` runs *before* mappings are added to the configuration, whereas in `HibernateRepositoryFactory` it runs *after*. The `SchemaUpdate(cfg)` here is invoked via `ExposeConfiguration` on the `.Database(...)` chain, so the mappings loop happens on the already-schema-updated configuration. Whether the two orders produce the same DDL in practice is worth verifying before deleting either copy.
-- **No error wrapping.** Exceptions from `Assembly.Load` or `BuildSessionFactory` propagate raw to the caller. By contrast, `HibernateRepositoryFactory<TKey>` wraps initialization failures in a `DataAccessException` and guards against a second init with an `IsInitialized` static flag.
-- **`ShowSql()`** is on in both copies; if you keep `SessionFactoryBuilder` as the canonical path, decide what logging level production should have.
+- The dialect is hard-wired to `MsSqlConfiguration.MsSql2012` with the SQL Server `MicrosoftDataSqlClientDriver`, so this only targets SQL Server.
+- `ShowSql()` is always on, meaning SQL statements are logged whenever a factory is built through this path.
+- The `foreach` loops over `mappingAssemblies` and calls `Assembly.Load(mappingAssembly)` on each name before adding that assembly's Fluent mappings. A misspelled or unloadable assembly name throws an `AssemblyLoadException` from `Assembly.Load` with no wrapping or custom message.
+- `ExposeConfiguration(cfg => new SchemaUpdate(cfg).Execute(false, true))` runs hbm2ddl's schema update *before* `BuildSessionFactory()`, so the database schema is altered to match the mappings each time a factory is built. The `true` flag also logs the generated SQL.
+- `BuildSessionFactory()` is the expensive step — it compiles all mappings into the configuration — and its result is returned directly. There is no caching, disposal handling, or initialization guard; the caller owns the returned factory.
 
 ### Rough edges
 
-The entire Fluent NHibernate configuration is duplicated between `SessionFactoryBuilder.BuildSessionFactory` and the `HibernateRepositoryFactory<TKey>` constructor, and only the factory's copy is active. Anyone editing one will not see the other, so the two will drift.
+- The entire Fluent NHibernate configuration is duplicated between `SessionFactoryBuilder.BuildSessionFactory` and the `HibernateRepositoryFactory<TKey>` constructor, and only the factory's copy is active, so changes to the dialect, driver, or schema-update strategy must be made in two places (or one copy will drift).
+- `BuildSessionFactory` has no callers in this repository, so its behavior — including schema auto-update and `ShowSql()` — is not exercised by anything here.
+- `Assembly.Load(mappingAssembly)` takes an assembly *name*; it will throw `FileNotFoundException`/`AssemblyLoadException` for anything that isn't exactly resolvable by that name.

@@ -1,34 +1,24 @@
-This file is not really a "source file" in the code sense — it has no namespace, class, or function. It's a single assembly-level attribute that MSTest uses to configure test execution for the whole `TestProject1` assembly.
-
----
-
 ### Purpose
 
-**File:** `TestProject1/MSTestSettings.cs`
-
-This file is MSTest's conventional "settings" file for the test assembly: a single line declaring assembly-level test-runner configuration. It tells MSTest to run test methods in this project in parallel at method level:
+`MSTestSettings.cs` sets the MSTest v2 execution mode for the whole test assembly. The single line
 
 ```csharp
 [assembly: Parallelize(Scope = ExecutionScope.MethodLevel)]
 ```
 
-That is the entire content. MSTest discovers assembly-level `Parallelize` attributes (typically placed in a file named `MSTestSettings.cs`) to set the default concurrency scope for the whole assembly.
+turns on test parallelization at the method level: MSTest may run test methods from different test classes concurrently within the assembly.
 
 ### Role in the Codebase
 
-It is build-time/test-runner configuration for the `TestProject1` unit test project, sitting next to `UserViewModelTest.cs` (the only test class) and `TestProject1.csproj` (which pulls in the MSTest 4.2.1 package and adds a global `using` for `Microsoft.VisualStudio.TestTools.UnitTesting`, so the attribute needs no import here). If the file were removed, nothing in the tests themselves would break — MSTest would simply fall back to its default execution, which is to run tests sequentially.
+The file lives in `TestProject1`, an MSTest v2 project (`MSTest` 4.2.1, net10.0-windows) that hosts `UserViewModelTest.cs`. Assembly-level attributes like `Parallelize` can only be placed in a compiler-generated `.cs` file, which is why MSTest v2 conventions put them in a dedicated settings file like this one rather than in a test class. Removing it would not break compilation — the tests would simply run sequentially, which is MSTest's default.
 
 ### Relationships
 
-- **Consumed by:** the MSTest framework at test execution time via reflection over the assembly's attributes. No code in the repository references it directly.
-- **Interacts with:** `UserViewModelTest.cs`, the only test class in the assembly. That class carries `[DoNotParallelize]` at class level, so every test method in it is excluded from this file's assembly-level setting (see below).
-- **Defined by:** `ParallelizeAttribute`, `ExecutionScope`, and `DoNotParallelizeAttribute` come from the external MSTest library, not from this codebase.
+- It has no imports, no project-local dependencies, and no callers. The attribute type (`ParallelizeAttribute`, `ExecutionScope`) comes from the external `MSTest` package.
+- The only other code in the assembly is `UserViewModelTest` in `UserViewModelTest.cs`, whose test methods would become the units MSTest schedules in parallel once this file is present.
 
 ### Behavior & Details
 
-- `ExecutionScope.MethodLevel` means individual test methods may run concurrently with each other, provided nothing in their class or assembly opts out.
-- The class-level `[DoNotParallelize]` in `UserViewModelTest` takes precedence over this assembly-level setting for that class. Since it is the only test class in the project, the attribute in this file is currently inert: in practice, all tests in `TestProject1` still run sequentially.
-
-### Rough edges
-
-- The assembly-level `Parallelize` is dead configuration as long as the sole test class keeps `[DoNotParallelize]`; it would only take effect once a new test class is added to the project that does not opt out.
+- The setting takes effect on the compiled test assembly as a whole; it cannot be scoped per class or method from here.
+- The one test class in the project, `UserViewModelTest`, is itself marked `[DoNotParallelize]`, so its methods run serially regardless of this assembly-level setting. As a result, the parallelization enabled by this file currently has no effect on the suite: there are no other test classes it could interleave with. It effectively documents the intended default (parallel methods) while the class-level opt-out keeps the existing tests isolated.
+- Anyone adding a new test class to `TestProject1` without `[DoNotParallelize]` should be aware that its methods may run concurrently with methods in other classes, so tests must not rely on shared mutable static state.

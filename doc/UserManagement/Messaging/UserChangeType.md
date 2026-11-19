@@ -1,27 +1,25 @@
-# `UserManagement/Messaging/UserChangeType.cs`
-
 ### Purpose
 
-This file defines `UserChangeType`, an enum that classifies *what happened* to a user when one is changed: `Added`, `Updated`, or `Deleted`. It exists so the messaging layer can say not just that a user changed, but what kind of change it was, letting recipients react differently per case.
-
-It is a small shared-vocabulary type — a few lines long with no logic — and its entire job is to be read as the discriminating field of the message that carries it.
+`UserManagement/Messaging/UserChangeType.cs` defines `UserChangeType`, an enum that names *what happened* to a user: `Added`, `Updated`, or `Deleted`. It exists so that a message can carry not just "a user changed" but the specific kind of change, letting the recipient take a different action per case without the sender knowing who is listening.
 
 ### Role in the Codebase
 
-The enum is one of only two members of the `UserManagement/Messaging` folder, the app's event-contract layer. The other is `UserChangedMessage`, and the relationship is one-way: the message is defined in terms of this enum and cannot function without it. If the enum were removed, `UserChangedMessage` would stop compiling, and the message-based refresh flow between the add-user screen and the user list would fall apart with it.
+It is one of the two types in the `UserManagement/Messaging` folder, the small event contract of the UserManagement module. The companion file `UserChangedMessage.cs` is the actual payload that travels through the message bus and cannot be constructed without a `UserChangeType`. Removing this enum would force `UserChangedMessage` and both its sender and receiver to be rewritten; there is no other mechanism in the module that distinguishes add from update from delete.
 
 ### Relationships
 
-- **`UserChangedMessage`** (`UserManagement/Messaging/UserChangedMessage.cs`) — the direct dependent. It takes a `UserChangeType` in its primary constructor and exposes it as a read-only `UserChangeType` property. Its convenience constructor (user model only) hard-codes `UserChangeType.Added`.
-- **Producer:** `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`) sends `new UserChangedMessage(UserChangeType.Added, userModel)` through `WeakReferenceMessenger` after a successful user creation. This is the only place in the repository that constructs a message with an explicit change type.
-- **Consumer:** `ShowUsersViewModel` (`UserManagement/ViewModel/ShowUsersViewModel.cs`) registers a `WeakReferenceMessenger` handler for `UserChangedMessage` and switches on `message.UserChangeType` to decide what to do with the received user.
+- **`UserChangedMessage`** (`UserManagement/Messaging/UserChangedMessage.cs`) — the direct dependent. Its primary constructor takes a `UserChangeType` and stores it in a read-only `UserChangeType` property; its single-argument convenience constructor hardcodes `UserChangeType.Added`.
+- **Sender:** `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`) sends `new UserChangedMessage(UserChangeType.Added, userModel)` over `WeakReferenceMessenger.Default` after successfully saving a new user.
+- **Receiver:** `ShowUsersViewModel` (`UserManagement/ViewModel/ShowUsersViewModel.cs`) registers for `UserChangedMessage` in its constructor and switches on `message.UserChangeType`.
+
+It has no dependencies of its own — just a namespace declaration and the enum.
 
 ### Behavior & Details
 
-- Three values, in declaration order (and so with the underlying integer values 0, 1, 2): `Added`, `Updated`, `Deleted`. There is no memberwise logic to document beyond that.
-- The `Updated` and `Deleted` members are currently defined but unused end-to-end. `ShowUsersViewModel`'s switch handles only `Added` (appending to its `Users` collection) and explicitly throws `NotImplementedException` for the other two. So anything that ever sends an `Updated` or `Deleted` message today would crash the recipient rather than be ignored.
-- The message's no-type convenience constructor defaults to `Added`, so any future sender that omits the change type implicitly produces `UserChangeType.Added` rather than an error.
+- Three members, with the implicit default integral values: `Added = 0`, `Updated = 1`, `Deleted = 2`. The values are not serialized or persisted anywhere in the repository, so only the names matter.
+- The enum is `public` and lives in the module's `Messaging` namespace, so any code in the app that participates in the user-change flow can use it.
+- Note the current reality on the consumer side: `ShowUsersViewModel` handles only `Added` (it appends to the displayed list). Both `Updated` and `Deleted` cases currently end in `throw new NotImplementedException()`. So today, sending a message with either of those values will crash the first handler that receives it — the enum advertises a fuller contract than the codebase has implemented. The convenience constructor on `UserChangedMessage` also silently defaults to `Added`, so a sender that forgets to specify a change type produces "Added" rather than an error.
 
 ### Rough edges
 
-The enum advertises three operations, but only `Added` is implemented anywhere. `Updated` and `Deleted` are dead values that a consuming switch treats as fatal (`NotImplementedException`), so adding a producer for them without also finishing the consumers would introduce a crash path, not a feature.
+- `Updated` and `Deleted` are declared but unimplemented: `ShowUsersViewModel` throws `NotImplementedException` for both, so the enum currently over-promises relative to what any handler can actually process.

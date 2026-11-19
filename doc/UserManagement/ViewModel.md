@@ -1,56 +1,71 @@
 ### Purpose
 
-The `UserManagement/ViewModel` directory serves as the presentation-layer logic for the User Management feature, implementing the Model-View-ViewModel (MVVM) pattern via MEF (Managed Extensibility Framework). It groups the view models responsible for creating and listing users, alongside their contracts and a root composition host. These components belong together because they form a single, self-contained view-model hierarchy: the root view model aggregates the specific "add" and "show" functionalities, and MEF injects the concrete implementations into the parent based on their interface definitions.
+The `UserManagement/ViewModel` directory contains the MVVM layer for the User Management feature in a WPF application. It aggregates the logic for adding new users and displaying the user list into a single module entry point.
+
+The components belong together because they form a closed loop of data flow: the "Add" view model validates and saves new users, while the "Show" view model displays them and listens for updates. The `UserViewModel` acts as the facade, composing these two siblings via MEF (Managed Extensibility Framework) so that the rest of the application can resolve the entire feature through a single contract.
 
 ### Software Components
 
-The directory contains three distinct logical components, each defined by an interface-concrete class pair:
+The directory follows a strict interface/implementation pair pattern for each responsibility, allowing MEF to compose the objects without direct dependencies on concrete types.
 
-1.  **Root Composition Host:**
-    *   **Files:** [IUserViewModel.cs](UserManagement/ViewModel/IUserViewModel.md) and [UserViewModel.cs](UserManagement/ViewModel/UserViewModel.md)
-    *   **Role:** The entry point for the module. `UserViewModel` inherits from `MainViewModelBase` and uses MEF `[Import]` to aggregate the other two view models. It is exported as both `IUserViewModel` and `IMainViewModel`, allowing different hosts (console, WPF, WinForms) to resolve the entire feature through a single object. It contains no business logic itself.
+**User Aggregation (`UserViewModel.cs` / `IUserViewModel.cs`)**
+`UserViewModel` is the top-level entry point for the module. It implements `IUserViewModel` and `IMainViewModel`, serving as the root for the feature. It does not contain business logic; instead, it uses MEF `[Import]` attributes to inject the child view models (`IAddUserViewModel` and `IShowUsersViewModel`). This class is what external hosts (like the WinForms or Console apps) resolve to access the user management feature.
 
-2.  **Add User Functionality:**
-    *   **Files:** [IAddUserViewModel.cs](UserManagement/ViewModel/IAddUserViewModel.md) and [AddUserViewModel.cs](UserManagement/ViewModel/AddUserViewModel.md)
-    *   **Role:** Handles the creation of new users. `AddUserViewModel` implements `INotifyDataErrorInfo` via `ValidatableViewModelBase` to provide live validation. It exposes `FirstName` and `LastName` properties (satisfying `IUser`) and a `SaveUserCommand`. Upon saving, it persists the user via `IUserService` and broadcasts a `UserChangedMessage` to notify other parts of the application.
+**User Creation (`AddUserViewModel.cs` / `IAddUserViewModel.cs`)**
+`AddUserViewModel` handles the "create user" form. It manages the `FirstName` and `LastName` fields, provides live validation using `ValidatableViewModelBase`, and exposes `SaveUserCommand`. When a user is saved, it calls `IUserService.AddUser` and broadcasts a `UserChangedMessage` via `WeakReferenceMessenger` to notify other parts of the application. It inherits from `IUser` to allow direct data binding and validation against the user data shape.
 
-3.  **Show Users Functionality:**
-    *   **Files:** [IShowUsersViewModel.cs](UserManagement/ViewModel/IShowUsersViewModel.md) and [ShowUsersViewModel.cs](UserManagement/ViewModel/ShowUsersViewModel.md)
-    *   **Role:** Manages the display of existing users. `ShowUsersViewModel` maintains an `ObservableCollection<UserModel>` exposed as `Users`. It initializes this collection by fetching data via `IUserService.GetActiveUsers()` when `LoadedCommand` is invoked. It also subscribes to `WeakReferenceMessenger` to update the list reactively when a `UserChangedMessage` is received.
+**User Listing (`ShowUsersViewModel.cs` / `IShowUsersViewModel.cs`)**
+`ShowUsersViewModel` manages the display of the user list. It holds an `ObservableCollection<UserModel>` and initializes it by calling `IUserService.GetActiveUsers` in `OnLoadedAsync`. Crucially, it subscribes to `UserChangedMessage` broadcasts from `AddUserViewModel` to keep the list in sync without direct references. It is the implementation half of the `IShowUsersViewModel` contract.
 
 ### Relationships
 
-The directory relies on a strict MEF-based composition pattern. `UserViewModel` is the parent container; it does not instantiate `AddUserViewModel` or `ShowUsersViewModel` directly. Instead, MEF resolves their respective interfaces (`IAddUserViewModel`, `IShowUsersViewModel`) and injects them into the `[Import]` properties of `UserViewModel`. This decouples the parent from the concrete implementations, allowing the components to be swapped or tested in isolation.
+The directory relies on MEF for composition rather than direct instantiation. The dependency flow moves from the host application into `IUserViewModel`, which then resolves the two child contracts.
 
-Data flows primarily through the business layer (`IUserService`) and message broadcasting. While `AddUserViewModel` writes to the database, it does not directly modify `ShowUsersViewModel`. Instead, it sends a `UserChangedMessage` via `WeakReferenceMessenger`. `ShowUsersViewModel` listens for this message and appends the new user to its local `Users` collection. This asynchronous messaging decouples the two sibling view models, ensuring the list view stays in sync without tight coupling.
+1.  **Composition Root:** External hosts resolve `IUserViewModel`. The MEF container finds `UserViewModel` (exported as `IUserViewModel`) and injects `AddUserViewModel` and `ShowUsersViewModel` into its `[Import]` properties.
+2.  **Data Flow (Add -> Show):** There is no direct dependency between `AddUserViewModel` and `ShowUsersViewModel`. Instead, `AddUserViewModel` sends a `UserChangedMessage` to a global messenger (`WeakReferenceMessenger`) after a successful save. `ShowUsersViewModel` registers as a recipient in its constructor and updates its local `Users` collection when it receives the message. This decouples the two components.
+3.  **Service Dependencies:** Both child view models import `IUserService` and `ILoggingService` from their respective layers (`BusinessLayer` and `Logging`). `IUserService` provides the actual persistence and retrieval logic.
+4.  **UI Binding:** The WPF views (e.g., `UserView.xaml`) bind to the parent `UserViewModel` and navigate into the child properties (e.g., `{Binding AddUserViewModel.FirstName}`) to connect UI controls to the logic.
 
 ```mermaid
 flowchart TD
     subgraph "UserManagement/ViewModel"
-        UV[IUserViewModel]
-        UVImpl[UserViewModel]
-        AUV[IAddUserViewModel]
-        AUVImpl[AddUserViewModel]
-        SUV[IShowUsersViewModel]
-        SUVImpl[ShowUsersViewModel]
+        UV[UserViewModel]
+        IUV[IUserViewModel]
+        AV[AddUserViewModel]
+        IAV[IAddUserViewModel]
+        SV[ShowUsersViewModel]
+        ISV[IShowUsersViewModel]
     end
 
-    UVImpl -.->|implements| UV
-    UVImpl -->|imports| AUV
-    UVImpl -->|imports| SUV
-    
-    AUVImpl -.->|implements| AUV
-    SUVImpl -.->|implements| SUV
+    subgraph "External Hosts"
+        Host[WinForms / Console App]
+    end
 
-    AUVImpl -->|sends| MSG[UserChangedMessage]
-    MSG -->|receives| SUVImpl
+    subgraph "Services"
+        US[IUserService]
+        LS[ILoggingService]
+    end
+
+    Host -->|Resolves| IUV
+    IUV -.->|Implemented by| UV
+    UV -->|Imports| IAV
+    UV -->|Imports| ISV
+    IAV -.->|Implemented by| AV
+    ISV -.->|Implemented by| SV
+    AV -->|Uses| US
+    SV -->|Uses| US
+    AV -.->|Sends UserChangedMessage| Messenger[WeakReferenceMessenger]
+    Messenger -.->|Receives Message| SV
+    AV -->|Imports| LS
+    SV -->|Imports| LS
 ```
 
 ### Rough edges
 
-- `LoggingService` is injected into both `AddUserViewModel` and `ShowUsersViewModel` but is never actually used in their method bodies, representing dead code.
-- `ShowUsersViewModel`'s message handler throws `NotImplementedException` for `Updated` and `Deleted` change types. Since these are not currently sent, the application works, but any future implementation of edit/delete features will cause a runtime crash rather than graceful handling.
-- `UserViewModel` initializes its imported properties with `null!`. If MEF fails to resolve an export, the error surfaces as a `NullReferenceException` later in the code rather than a clear composition failure at startup.
+-   **Unused Logging:** Both `AddUserViewModel` and `ShowUsersViewModel` import `ILoggingService` via MEF, but neither class actually invokes any logging methods. The dependency is declared but dead.
+-   **Crash on Update/Delete:** `ShowUsersViewModel` handles `UserChangedMessage` by appending users, but its handlers for `Updated` and `Deleted` message types throw `NotImplementedException`. If these messages were ever sent, the application would crash.
+-   **State Duplication Risk:** `ShowUsersViewModel.OnLoadedAsync` appends users to the collection rather than clearing it first. If the `Loaded` event were triggered twice (e.g., in a designer preview or re-navigation), the user list would contain duplicates.
+-   **Validation Feedback Loop:** After a successful save in `AddUserViewModel`, the fields are cleared to empty strings. This immediately triggers validation errors ("required" fields), causing the form to display as invalid right after a successful action, until the user types again.
 
 ## Contents
 - [AddUserViewModel.cs](UserManagement/ViewModel/AddUserViewModel.md)

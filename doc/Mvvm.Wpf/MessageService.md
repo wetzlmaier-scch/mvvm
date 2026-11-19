@@ -1,27 +1,35 @@
 ### Purpose
-
-`Mvvm.Wpf/MessageService.cs` is the WPF implementation of the `IMessageService` contract defined in the core `Mvvm` project. It exists so that WPF-based applications built on this MVVM framework can show message boxes without UI-framework types leaking into view models. View models depend only on `IMessageService`; at runtime, the WPF `MessageService` in this file is the concrete behavior behind that interface.
+`Mvvm.Wpf/MessageService.cs` defines `MessageService`, the WPF implementation of the `IMessageService` contract. It exists so that framework-agnostic view models can show modal dialogs (info, warning, error, and yes/no/ok-cancel questions) without referencing WPF themselves — this class is the only place in that path that touches `System.Windows.MessageBox`.
 
 ### Role in the Codebase
+This is one of three parallel `IMessageService` implementations, one per UI host: WPF (this file), WinForms (`Mvvm.Winforms/MessageService.cs`), and console (`Mvvm.Console/MessageService.cs`). Each lives in its own host-support project, and exactly one is loaded into any given application's MEF catalog.
 
-This is one of three parallel implementations of `IMessageService`, one per UI host: `Mvvm.Wpf/MessageService.cs` (WPF), `Mvvm.Winforms/MessageService.cs` (WinForms), and `Mvvm.Console/MessageService.cs` (console). Each is marked `[Export(typeof(IMessageService))]`, so MEF picks up the right one when the hosting application's assembly directory is scanned by `MvvmApplication`'s composition container. If this file were removed, a WPF host could no longer satisfy `IMessageService` imports — any WPF view model requesting the interface (see `UserManagement/ViewModel/AddUserViewModel.cs`, which takes `IMessageService` as a settable dependency) would fail to compose or be left unset.
+The class is registered for MEF discovery via `[Export(typeof(IMessageService))]`. At startup, `Mvvm.Wpf/MvvmApplication.cs` builds a `CompositionContainer` (through `CompositionHelper` in `Common/Composition/CompositionHelper.cs`) that catalogues the WPF host's assemblies and thus finds this export. If the file were removed, any WPF host that imports `IMessageService` would fail composition, because there would be no export to satisfy it.
 
 ### Relationships
-
-- **`IMessageService`** (`Mvvm/IMessageService.cs`, namespace `Mvvm`): the interface this class implements. All nine methods map 1:1 to the interface's members; the interface is the source of truth for the contract.
-- **`MessageResult`** (`Mvvm/MessageResult.cs`): the return type of the three question methods. It is a framework-neutral enum whose values are numbered to match WPF's `MessageBoxResult` (`OK = 1`, `Cancel = 2`, … `Yes = 6`, `No = 7`), which is what makes the casts in this class work.
-- **MEF (`System.ComponentModel.Composition`)**: the `[Export(typeof(IMessageService))]` attribute is how this class registers itself with the `CompositionContainer` created in `MvvmApplication.OnStartup`.
-- **Callers**: view models that import `IMessageService` (e.g. `AddUserViewModel`). Unit tests substitute a `Mock<IMessageService>` instead of this class (`TestProject1/UserViewModelTest.cs`), so tests never touch real message boxes.
+- **`IMessageService`** (`Mvvm/IMessageService.cs`, namespace `Mvvm`): the interface this class implements. All nine members map 1:1 to the interface; nothing is added and nothing is omitted.
+- **`MessageResult`** (`Mvvm/MessageResult.cs`, namespace `Mvvm`): the return type of the three question methods. The numeric values are deliberately aligned with WPF's `MessageBoxResult` enum (OK = 1, Cancel = 2, Yes = 6, No = 7), which is why the cast in each question method is safe.
+- **MEF (`System.ComponentModel.Composition`)**: the `[Export]` attribute is how this class becomes discoverable; callers never name `MessageService` directly.
+- **WPF's `MessageBox`** (`System.Windows`): the sole UI dependency; every method delegates to `MessageBox.Show`.
+- **Callers**: view models that import `IMessageService` — for example `UserManagement/ViewModel/AddUserViewModel.cs` has an `IMessageService MessageService` property. Unit tests substitute a `Mock<IMessageService>` (`TestProject1/UserViewModelTest.cs`) instead of this class, so tests never exercise it.
 
 ### Behavior & Details
+Every method is a thin, blocking call to `MessageBox.Show`. Since the dialogs are modal, each call suspends the UI thread until the user dismisses the box.
 
-The class is a thin wrapper over WPF's `MessageBox.Show`, with no state and no other side effects. The methods fall into two groups:
+**Notifications (no return value)** — `ShowMessage`, `ShowWarning`, and `ShowError` each come in two overloads:
 
-- **Notification methods** — `ShowMessage`, `ShowWarning`, `ShowError`. Each shows an OK-only dialog. The icon differs by method: `MessageBoxImage.None` for messages, `Warning` for warnings, `Error` for errors. Each has a single-argument overload that supplies a fixed default caption: `"Message"`, `"Warning"`, or `"Error"` respectively.
-- **Question methods** — `ShowYesNoCancelQuestion`, `ShowYesNoQuestion`, `ShowOkCancelQuestion`. Each shows a `Question`-icon dialog with its button set and returns the user's choice as a `MessageResult`. Only the two-argument form exists for questions; a caption is always required. The `defaultResult` passed to `MessageBox.Show` preselects a button: `Cancel` for Yes/No/Cancel, `No` for Yes/No, and `Cancel` for OK/Cancel — so pressing Enter (or Esc, where it maps to the default) yields that choice without an explicit click.
+- The two-argument form shows a `MessageBoxButton.OK` box with the given caption and an image of `None`, `Warning`, or `Error` respectively.
+- The one-argument form just supplies a default caption — `"Message"`, `"Warning"`, or `"Error"` — and delegates to the two-argument form.
 
-The non-obvious part is the return-value conversion: each question method casts WPF's `MessageBoxResult` straight to `MessageResult`, for example `(MessageResult)MessageBox.Show(..., MessageBoxResult.Cancel)`. That cast is only correct because the two enums were numbered identically. WPF's `MessageBoxResult` is `None = 0, OK = 1, Cancel = 2, Abort = 3, Retry = 4, Ignore = 5, Yes = 6, No = 7`, which is exactly the numbering `MessageResult` uses, so every value a WPF message box can return maps onto a same-named, same-numbered member.
+**Questions (return `MessageResult`)** — the three question methods each pass a `MessageBoxResult` value as `MessageBox.Show`'s `buttonResult` parameter. That parameter determines what the box returns when dismissed without a button press (e.g., Alt+F4), so each method has a deliberate "escape" default:
+
+- `ShowYesNoCancelQuestion` → buttons `YesNoCancel`, default result `Cancel`.
+- `ShowYesNoQuestion` → buttons `YesNo`, default result `No`.
+- `ShowOkCancelQuestion` → buttons `OkCancel`, default result `Cancel`.
+
+The result is cast from WPF's `MessageBoxResult` to the framework's `MessageResult`. Because the two enums share numeric values, the cast preserves meaning for the results that can actually occur (`OK`, `Cancel`, `Yes`, `No`).
+
+Callers branch on the returned `MessageResult` (e.g., proceed only on `MessageResult.Yes`). A caller should also be ready for the "escape" default if the dialog is closed by means other than a button.
 
 ### Rough edges
-
-The `(MessageResult)MessageBoxResult` cast is safe today purely by numeric coincidence between the two enums. Nothing in the code enforces the alignment, and WPF's `MessageBoxResult` values are fixed by the framework — so the real risk is a future renumbering or addition in `MessageResult` silently corrupting results with no compile-time error. The WinForms sibling has the same kind of coupling.
+The `MessageResult` enum contains values that none of the question methods can return (`None`, `Abort`, `Retry`, `Ignore`, `TryAgain`, `Continue`); they exist only because the enum mirrors `MessageBoxResult` wholesale.

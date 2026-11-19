@@ -2,28 +2,29 @@
 
 ### Purpose
 
-`IUserService` is the business-layer contract for user management in this solution. It exists so that the `UserManagement` view models (and the unit tests) can depend on an abstraction for querying and creating users, rather than on the concrete `UserService`. The concrete implementation is `UserService` (`BusinessLayer/UserService.cs`), which is published to the MEF composition container via `[Export(typeof(IUserService))]`.
+`IUserService` is the business-layer contract for user management in this solution. It exists so that the `UserManagement` view models (and the unit tests) can depend on an abstraction for querying and creating users instead of on `UserService` directly. It declares exactly two operations — fetch the active users, add a new user — plus a settable `LoggingService` property.
 
 ### Role in the Codebase
 
-The interface is the seam between the MVVM `UserManagement` module and the `BusinessLayer` project. It is the type that flows through MEF: consumers declare a `[Import] public IUserService UserService` property and call through the interface. The contract is implemented by exactly one class, `UserService`, and is also the type mocked in `TestProject1/UserViewModelTest.cs` via Moq.
-
-Removing the interface would break the MEF wiring (the `[Export]` on `UserService` and the `[Import]` properties on the view models all reference it) and the test suite's ability to substitute a fake.
+The interface is the seam between the MVVM `UserManagement` module and the `BusinessLayer` project. It is the type that flows through MEF: consumers declare `[Import] public IUserService UserService { get; set; }` and the composition container fills it with the sole implementation, `UserService` (`BusinessLayer/UserService.cs`), which publishes itself via `[Export(typeof(IUserService))]`. Removing the interface would force every view model to bind to the concrete `UserService` and would break the mocked stubs in `TestProject1`.
 
 ### Relationships
 
-- **`UserDto`** (`Dto/UserDto.cs`) — the data shape crossing this boundary. `GetActiveUsers()` returns `List<UserDto>`; `AddUser` takes one. `UserDto` implements `Dto.IUser` and adds `Id`; note the service layer deliberately uses the concrete DTO at its boundary rather than `IUser`.
-- **`ILoggingService`** (`Logging/ILoggingService.cs`) — declared as a settable property on the interface, not as a constructor parameter. `UserService` inherits the full `Microsoft.Extensions.Logging.ILogger` surface plus its `Log*` overloads through this type and uses `LogError(e, "Error saving user")` in its save path.
-- **Callers** — `UserManagement/ViewModel/ShowUsersViewModel.cs` calls `GetActiveUsers()` when the view loads; `UserManagement/ViewModel/AddUserViewModel.cs` calls `AddUser()`. `TestProject1/UserViewModelTest.cs` mocks the interface with Moq to test both view models.
+- **`UserDto`** (`Dto/UserDto.cs`) — the data shape both methods exchange. A small POCO with `Id`, `FirstName`, `LastName`; it implements the `Dto.IUser` contract.
+- **`ILoggingService`** (`Logging/ILoggingService.cs`) — declared as a settable property on the interface, implemented in the `Logging` project. It extends `Microsoft.Extensions.Logging.ILogger` with strongly-typed overloads such as `LogError(Exception?, string?, ...)`.
+- **Consumers:**
+  - `UserManagement/ViewModel/ShowUsersViewModel.cs` — imports the service and calls `GetActiveUsers()` in `OnLoadedAsync()` to populate its `Users` collection.
+  - `UserManagement/ViewModel/AddUserViewModel.cs` — imports the service and calls `AddUser(UserDto)` from `SaveUserAsync()` after its own validation passes.
+  - `TestProject1/UserViewModelTest.cs` — builds a `Mock<IUserService>` to stub both operations.
 
 ### Behavior & Details
 
-The interface has two operations plus one dependency property:
-
-- **`Task<List<UserDto>> GetActiveUsers()`** — returns the current user list. The implementation queries NHibernate over the `User` entity and projects each to a `UserDto`.
-- **`Task AddUser(UserDto user)`** — persists a new user. The implementation validates that `FirstName` and `LastName` are not null or whitespace, saves within an NHibernate transaction, rolls back on failure, logs the error through `LoggingService`, and rethrows as `BusinessLayerException` so callers only ever see that one exception type.
-- **`ILoggingService LoggingService { get; set; }`** — a mutable dependency held on the contract itself. In `UserService` it is initialized to `null!` in the `[ImportingConstructor]` and is expected to be populated by the composition container (property import) before any method runs. Callers of the interface are not expected to set it; tests that use the interface directly will see a null `LoggingService` unless they assign one.
+- `Task<List<UserDto>> GetActiveUsers()` — contract for loading all currently active users, projected into DTOs. The implementation reads through NHibernate and never throws a checked exception of its own; callers treat a faulting call as an environment failure.
+- `Task AddUser(UserDto user)` — contract for persisting a new user. Two things a caller must know, both enforced by the implementation rather than the contract:
+  - `user.FirstName` and `user.LastName` must be non-null and non-whitespace, or a `CommunityToolkit` `ArgumentException` is thrown *before* any database work.
+  - Any persistence failure is logged via the service's `LoggingService` and rethrown as `BusinessLayerException`. `AddUserViewModel.SaveUserAsync` deliberately rethrows `BusinessLayerException` uncaught, so it propagates up to the composition/host layer.
+- `ILoggingService LoggingService { get; set; }` — a settable property on the interface, not a method parameter. It is part of the contract because `UserService.AddUser` calls `LoggingService.LogError(...)` on failure and would hit a `NullReferenceException` if never assigned. The concrete implementation initializes it to `null!` in its constructor, so the property is only usable once MEF property injection has completed. Callers of the interface should treat it as "set before first use by the container," not something they assign themselves.
 
 ### Rough edges
 
-The `LoggingService` property is declared on the interface and only used by the implementation, not by any caller — it couples the public contract to an internal implementation concern. Any future implementer must set this property to avoid a `NullReferenceException` on `AddUser`'s error path, even if it never logs.
+The `LoggingService` property is unusual in the interface: it is business-layer plumbing (the service needs a logger for `AddUser`'s failure path) but it is exposed on the public contract and has no injection annotation of its own — MEF fills it only because the `UserService` implementation relies on the container to set it after construction. A caller who constructs or fakes `IUserService` outside MEF gets a property that must be assigned manually before any `AddUser` failure can be logged.

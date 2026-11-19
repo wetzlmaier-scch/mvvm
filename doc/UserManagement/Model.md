@@ -1,56 +1,60 @@
 ### Purpose
 
-This directory holds the view-side data model for the UserManagement module. It contains `UserModel.cs`, which defines `UserModel`, a lightweight MVVM class used by the WPF UI for display and data binding.
-
-The contents belong together because `UserModel` is the sole display object in this module. It decouples the UI layer from the underlying business logic entities and DTOs, allowing the view to bind directly to user properties without accessing storage or service layers.
+`UserManagement/Model` contains the view-side data objects for the UserManagement module. Its primary responsibility is to provide lightweight, observable models that allow the UI to display user data without depending on business logic or service DTOs. Currently, the directory holds a single class: [UserModel.cs](UserManagement/Model/UserModel.md). This class exists to bridge the gap between the UI layer and the underlying user entities, specifically for data binding in views and view models.
 
 ### Software Components
 
-The directory contains a single source file: `UserModel.cs`.
+The directory consists of one source code component:
 
-*   **`UserModel`**: A partial class that inherits from `ObservableObject` (via the `CommunityToolkit.Mvvm` library). It exposes `FirstName` and `LastName` as observable properties, enabling automatic UI updates when values change.
+*   **`UserModel`**: Defined in [UserModel.cs](UserManagement/Model/UserModel.md), this is an observable object designed for data binding. It exposes `FirstName` and `LastName` properties and inherits from `ObservableObject` (via the `CommunityToolkit.Mvvm` library) to support change notifications. It serves two main roles: as a display item in user lists and as a payload for messaging events (e.g., `UserChangedMessage`). It contains no business logic, validation, or persistence logic.
 
 ### Relationships
 
-`UserModel` serves as the primary data carrier for the user interface in the UserManagement module. It does not contain business logic or persistence details; its sole purpose is to support WPF data binding.
+`UserModel` is a leaf node in the dependency graph; it depends only on external MVVM toolkit classes and is consumed by various parts of the `UserManagement` module.
 
-The dependency flow is unidirectional: ViewModels and Views consume `UserModel`.
-*   `ShowUsersViewModel` maintains an `ObservableCollection` of `UserModel` instances, populating it from `UserService` data.
-*   `AddUserViewModel` constructs `UserModel` instances after saving new users and sends them via `UserChangedMessage`.
-*   `UserChangedMessage` wraps a `UserModel` to propagate changes across the module.
-*   `UserForm` binds its list control to the collection of `UserModel` objects.
+*   **Consumers**:
+    *   `UserManagement/ViewModel/ShowUsersViewModel.cs` uses `UserModel` instances to populate its `Users` collection. It maps data from the business layer into `UserModel` objects for display.
+    *   `UserManagement/ViewModel/AddUserViewModel.cs` creates a new `UserModel` after a successful save operation and broadcasts it via `UserChangedMessage`.
+    *   `UserManagement/Messaging/UserChangedMessage.cs` carries `UserModel` instances as its payload.
+    *   `UserManagement/Design/DesignShowUsersViewModel.cs` creates hard-coded `UserModel` instances for design-time preview.
+    *   `WinFormsApp1/View/UserForm.cs` binds its UI controls to `ShowUsersViewModel.Users`, effectively displaying the `UserModel` data.
 
-Because `UserModel` lacks an `Id` property, the current implementation cannot distinguish between specific users when handling "Update" or "Delete" messages. This limits the module's ability to dynamically remove or modify individual items in the collection based on messages, as there is no key to match against.
+*   **Dependency Direction**: The dependency is strictly one-way. View models and views consume `UserModel`. No service or repository writes to `UserModel` directly; instead, data flows from the business layer into these models for presentation.
 
 ```mermaid
-classDiagram
-    class ObservableObject {
-        <<External>>
-        +INotifyPropertyChanged
-    }
-    class UserModel {
-        +string FirstName
-        +string LastName
-    }
-    class ShowUsersViewModel {
-        +ObservableCollection~UserModel~ Users
-    }
-    class AddUserViewModel {
-        +SaveUser()
-    }
-    class UserChangedMessage {
-        +UserModel Value
-    }
-    class UserForm {
-        +ListBox lstUsers
-    }
+flowchart TD
+    subgraph "UserManagement/Model"
+        UM["UserModel.cs<br/>UserModel"]
+    end
 
-    ObservableObject <|-- UserModel
-    ShowUsersViewModel --> UserModel : creates & manages collection
-    AddUserViewModel --> UserModel : instantiates on save
-    UserChangedMessage --> UserModel : wraps value
-    UserForm --> UserModel : binds to collection
+    subgraph "UserManagement/ViewModel"
+        SUVM["ShowUsersViewModel.cs"]
+        AUVM["AddUserViewModel.cs"]
+    end
+
+    subgraph "UserManagement/Messaging"
+        UCM["UserChangedMessage.cs"]
+    end
+
+    subgraph "UI Layer"
+        UF["UserForm.cs"]
+    end
+
+    subgraph "Design-Time"
+        DSUVm["DesignShowUsersViewModel.cs"]
+    end
+
+    AUVM -->|"Creates and Broadcasts"| UCM
+    UCM -->|"Carries Payload"| UM
+    SUVM -->|"Consumes via Message & Mapping"| UM
+    SUVM -->|"Exposes Collection"| UF
+    UF -->|"Binds Data"| UM
+    DSUVm -->|"Creates Hard-coded Instances"| UM
 ```
+
+### Rough edges
+
+`UserModel` lacks an `Id` property, meaning instances cannot be uniquely identified against persisted users. Consequently, `ShowUsersViewModel` cannot handle `Updated` or `Deleted` message types (currently throwing `NotImplementedException`) because it has no way to locate the specific existing entry to modify or remove.
 
 ## Contents
 - [UserModel.cs](UserManagement/Model/UserModel.md)

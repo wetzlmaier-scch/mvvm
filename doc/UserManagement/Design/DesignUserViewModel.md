@@ -1,32 +1,28 @@
-`UserManagement/Design/DesignUserViewModel.cs` defines `DesignUserViewModel`, a design-time stand-in for the real `UserViewModel`. The WPF XAML designer cannot run MEF, so this class exists so that `UserView.xaml` can show a fully populated screen in the designer.
-
 ### Purpose
-`UserView.xaml` sets its design data context to `DesignUserViewModel` via `d:DesignInstance`:
 
-```xml
-d:DataContext="{d:DesignInstance Type=design:DesignUserViewModel, IsDesignTimeCreatable=True}"
-```
-
-`IsDesignTimeCreatable=True` means the designer instantiates this class through its parameterless constructor at design time. At runtime the same XAML file is composed with the real `UserViewModel` instead; nothing in the application wires up `DesignUserViewModel`.
-
-The class exists to bridge a gap: the real view model's child properties are filled by MEF `[Import]`, which never runs in the designer. This class fills them manually so the designer can render the view.
+`UserManagement/Design/DesignUserViewModel.cs` defines `DesignUserViewModel`, a design-time stand-in for the real `UserViewModel`. The WPF XAML designer cannot run MEF, so the `ShowUsersViewModel` and `AddUserViewModel` properties on the real `UserViewModel` (populated via `[Import]`) would be empty when `UserView.xaml` renders in the designer. This class exists so the window previews with live-looking sub-view models and sample data instead of a blank layout. It is never involved in runtime composition.
 
 ### Role in the Codebase
-It is the root of the three design-time view models in the `UserManagement/Design` folder. Its constructor composes the two children:
 
-- `ShowUsersViewModel = new DesignShowUsersViewModel()` — populates `Users` with three sample `UserModel` entries (Jane Doe, John Smith, Alice Johnson).
-- `AddUserViewModel = new DesignAddUserViewModel()` — sets `FirstName = "Sample"`, `LastName = "User"`.
+One of three designer-only stubs in `UserManagement/Design/` (with `DesignAddUserViewModel` and `DesignShowUsersViewModel`). Each mirrors a real view model from `UserManagement/ViewModel/` and is referenced only inside `d:` (design-time) XAML metadata. It is a leaf of the designer hierarchy — the root design-time object from which the two child stubs are constructed.
 
-Both design-time children are plain subclasses of the real `AddUserViewModel` / `ShowUsersViewModel`, so all XAML bindings (`AddUserViewModel.FirstName`, `ShowUsersViewModel.Users`, `AddUserViewModel.SaveUserCommand`, etc.) resolve against the design instance exactly as they do at runtime. Removing this class would leave the designer with an empty `UserView.xaml` — no runtime behaviour depends on it, and no C# code references it.
+Removing it would not change application behavior at all; the designer would simply show the empty `UserView` layout without user list or form data, since the MEF imports would not be satisfied.
 
 ### Relationships
-- **Base type:** `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`), which derives from `MainViewModelBase` (`Mvvm/MainViewModelBase.cs`) and implements `IUserViewModel`. `UserViewModel` declares `AddUserViewModel` and `ShowUsersViewModel` as public `[Import]` properties; this class does not override anything, it only assigns them in its constructor.
-- **Design-time children:** `DesignAddUserViewModel` and `DesignShowUsersViewModel` (same folder), which subclass the real `AddUserViewModel` and `ShowUsersViewModel` and seed demo values.
-- **Consumer:** `WpfApp1/View/UserView.xaml` is the only thing that names `DesignUserViewModel`, and only inside `d:DataContext` (design-time metadata, `mc:Ignorable="d"`), so it is invisible to the compiled application.
 
-Note the inheritance side effects: `MainViewModelBase`'s constructor bails out immediately when `IsInDesignMode` is true (no window hook-up, no icon loading), and its `Shutdown` / `CloseWindow` methods are no-ops in design mode, so constructing this class in the designer is safe and has no application side effects.
+- **Base class:** `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`), a `partial` class extending `MainViewModelBase` and implementing `IUserViewModel`, exported via MEF as both `IUserViewModel` and `IMainViewModel`. `DesignUserViewModel` inherits its two import properties: `ShowUsersViewModel` (`IShowUsersViewModel`) and `AddUserViewModel` (`IAddUserViewModel`).
+- **Child stubs (same directory):** the constructor wires these in manually, bypassing MEF entirely:
+  - `ShowUsersViewModel = new DesignShowUsersViewModel()` — seeds the `Users` collection with three sample `UserModel` entries.
+  - `AddUserViewModel = new DesignAddUserViewModel()` — pre-fills `FirstName`/`LastName` with "Sample User".
+- **Consumer:** `WpfApp1/View/UserView.xaml` is the only reference in the repo, via `d:DataContext="{d:DesignInstance Type=design:DesignUserViewModel, IsDesignTimeCreatable=True}"`. `IsDesignTimeCreatable=True` means the designer builds this class through its parameterless constructor. Because the attribute is in the ignorable `d` namespace (`mc:Ignorable="d"`), the runtime build ignores it and composes the real `UserViewModel` through MEF instead.
 
 ### Behavior & Details
-- The only logic is the constructor: it assigns both inherited child properties. The inherited `[Import]` attributes are not evaluated here — MEF never touches this class, which is exactly the point.
-- One difference from the real object: `DesignShowUsersViewModel`'s constructor registers a `UserChangedMessage` handler on `WeakReferenceMessenger` (inherited from `ShowUsersViewModel`'s constructor). That registration is harmless in the designer — no messages are ever sent there — but the sample users in the designer view are static; they do not react to anything.
-- The demo values are display-only and carry no meaning at runtime; `DesignAddUserViewModel`'s `Sample`/`User` names and the three names in `DesignShowUsersViewModel` are just placeholders for the designer canvas.
+
+- The class is just a constructor with two assignments — no other members. Nothing is overridden from `UserViewModel`.
+- Constructor ordering note: base `UserViewModel` declares both properties with `= null!` initializers and MEF `[Import]` attributes. The derived constructor overwrites those initial values immediately, so MEF is never asked to resolve the imports in this path.
+- No commands, data, or validation come from this class itself; everything the designer binds against (`ShowUsersViewModel.Users`, `AddUserViewModel.FirstName`, `SaveUserCommand`, etc.) comes from the parent classes. So if you change the shape of `AddUserViewModel` or `ShowUsersViewModel` — a renamed property, a moved collection — the designer preview of `UserView` follows automatically, but anything this stub constructs that no longer compiles will break the design build even though the runtime app is unaffected.
+
+### Rough edges
+
+- `DesignUserViewModel` hard-wires its children via `new` rather than mirroring the runtime's MEF exports. That means the design-time tree is a second, hand-maintained composition that will drift silently if the runtime composition changes (e.g. a child type is swapped or renamed).
+- `DesignAddUserViewModel` is declared `partial` with no other partial in the repository, while this class and `DesignShowUsersViewModel` are not — an inconsistent marker that currently has no effect.

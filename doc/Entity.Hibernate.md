@@ -1,43 +1,35 @@
 ### Purpose
 
-`Entity.Hibernate` is a .NET class library that defines the domain model for user persistence using NHibernate. It contains the `User` entity and its corresponding Fluent NHibernate mapping, allowing the rest of the application to save and retrieve user data without dealing with raw SQL or ORM configuration directly. The two files here belong together because they form a single unit of persistence: one defines the object shape, and the other defines how that shape maps to the database.
+The `Entity.Hibernate` directory serves as the persistence model layer for the `User` domain object, containing the sole entity class and its corresponding Fluent NHibernate mapping. These files belong together because they define the contract between the application's in-memory representation of a user and the `Users` table in the database. Without this specific pairing, the ORM cannot translate domain objects into SQL queries or vice versa.
 
 ### Software Components
 
-This directory consists of two main components that work in tandem:
+The directory contains two core source code files that work as a unit:
 
-*   **The Entity:** [User.cs](Entity.Hibernate/User.md) defines the `User` class. It inherits from the abstract `Entity<int>` base class provided by the `DataAccessLayer` project, which supplies the `Id` property. The `User` class holds `FirstName`, `LastName`, and an `IsActive` flag. All properties are marked `virtual` to support NHibernate’s lazy loading and proxying mechanisms.
-*   **The Mapping:** [UserMapping.cs](Entity.Hibernate/UserMapping.md) defines the persistence rules for `User`. It is a Fluent NHibernate `ClassMap<User>` that specifies the table name (`Users`), primary key generation strategy (identity), and column constraints (such as `Not.Nullable` and length limits). It contains no executable logic itself; it serves as configuration consumed by the ORM during session factory initialization.
+*   **`User.cs`**: Defines the `User` entity class. It inherits from `Entity<int>` and exposes `FirstName`, `LastName`, and `IsActive` properties. This class contains no business logic, only state and the constructor required for the ORM to instantiate it.
+*   **`UserMapping.cs`**: Defines the Fluent NHibernate mapping for the `User` entity. It explicitly binds the `User` properties to the `Users` table, specifies that the `Id` is identity-generated, and enforces `NOT NULL` constraints on the name and active status columns.
 
 ### Relationships
 
-The dependency direction flows strictly from the mapping to the entity, and both are discovered by the data access layer at runtime.
+The relationship between these two files is one of direct dependency and synchronization. `UserMapping.cs` is a `ClassMap<User>`; it directly references the `User` class from `User.cs` to bind properties. Consequently, renaming a property in `User.cs` will cause a compile-time error in `UserMapping.cs` if the mapping is not updated simultaneously.
 
-1.  **Mapping depends on Entity:** [UserMapping.cs](Entity.Hibernate/UserMapping.md) uses lambda expressions (e.g., `x => x.FirstName`) that compile directly against the members of [User.cs](Entity.Hibernate/User.md). If you rename a property in `User`, the mapping will break at compile time.
-2.  **External Consumption:** Neither file is called directly by business logic. Instead, `SessionFactoryBuilder` in the `DataAccessLayer` project scans the `Entity.Hibernate` assembly for classes inheriting from `ClassMap<T>`. This reflection-based discovery means the mapping is automatically picked up as long as it exists in the assembly.
-3.  **Business Layer Interaction:** `UserService` in the `BusinessLayer` project is the only component that instantiates `User`. It creates new instances via the public constructor (which sets `IsActive` to `true`) and reads existing instances via NHibernate queries. The business layer never touches `UserMapping` directly.
+Externally, these files are discovered indirectly by `DataAccessLayer.Hibernate/SessionFactoryBuilder.cs`. This builder uses reflection to find `UserMapping.cs` and register it with NHibernate. It also triggers a schema update, meaning the column definitions in `UserMapping.cs` directly drive the database schema creation. The `User` entity is only instantiated by `BusinessLayer/UserService.cs`, which relies on this directory to persist and retrieve data.
 
 ```mermaid
 flowchart TD
     subgraph "Entity.Hibernate"
-        User["User.cs<br/>(Entity)"]
-        UserMapping["UserMapping.cs<br/>(Fluent Mapping)"]
+        User["User.cs (Entity)"]
+        Mapping["UserMapping.cs (Fluent Mapping)"]
     end
 
-    subgraph "DataAccessLayer"
-        EntityBase["Entity<int><br/>(Abstract Base)"]
-        SessionFactoryBuilder["SessionFactoryBuilder<br/>(Assembly Scanner)"]
-    end
+    SessionFactory["SessionFactoryBuilder.cs<br/>(DataAccessLayer)"]
+    UserService["UserService.cs<br/>(BusinessLayer)"]
 
-    User -->|inherits from| EntityBase
-    UserMapping -->|maps| User
-    SessionFactoryBuilder -->|discovers via reflection| UserMapping
+    Mapping -->|Maps to| User
+    SessionFactory -->|Discovers & Registers| Mapping
+    UserService -->|Constructs & Persists| User
+    UserService -->|Queries via| User
 ```
-
-### Rough edges
-
-*   The `GetActiveUsers()` method in the business layer does not actually filter by `IsActive`, making the `IsActive` property effectively write-on-creation with no current consumer for its value.
-*   The `User` constructor used by NHibernate for hydration explicitly assigns `null!` to `FirstName` and `LastName`, which is redundant since NHibernate overwrites these properties immediately after instantiation.
 
 ## Contents
 - [User.cs](Entity.Hibernate/User.md)

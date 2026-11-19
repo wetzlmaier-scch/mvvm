@@ -1,34 +1,23 @@
+# `Mvvm/IMainView.cs`
+
 ### Purpose
 
-`Mvvm/IMainView.cs` defines `IMainView<TDialogResult, TDimension>` — the contract for the application's main window in the shared `Mvvm` project. It exists so that the module controllers (`DefaultModuleController` in `WinFormsApp1` and `WpfApp1`) can drive the main window — show, close, set its data context — without knowing whether the host is a WinForms `Form` or a WPF `Window`.
-
-It is a very small file: a single generic interface with four properties. Everything substantive about it comes from its generic parameters and the interface it extends.
+`IMainView<TDialogResult, TDimension>` is the shared contract for an application's main window in the `Mvvm` project. It exists so that a module controller can open, size, and close the main window without knowing whether the host is WinForms or WPF. The two type parameters keep the contract UI-framework-neutral: `TDialogResult` matches the host's native dialog-result type (WinForms `DialogResult`, WPF `bool?`), and `TDimension` matches its natural geometry type (`int` pixels for WinForms, `double` for WPF).
 
 ### Role in the Codebase
 
-This interface is the top of the view-side hierarchy in the `Mvvm` project:
-
-- `IView` (`Mvvm/IView.cs`) declares only `DataContext`.
-- `IDialogView<TDialogResult>` (`Mvvm/IDialogView.cs`) adds `DialogResult`, `Closing`/`Closed` events, `Show()`, and `Close()`.
-- `IMainView<TDialogResult, TDimension>` adds the four geometry properties below.
-
-The controller side of the main window is the sibling `IMainViewModel` (`Mvvm/IMainViewModel.cs`); the two go together — each host project's `DefaultModuleController` imports one `IMainView<...>` and one `IMainViewModel`, wires `MainView.DataContext = mainViewModel`, calls `MainView.Show()` in `Run()`, and `MainView.Close()` in `Shutdown()`.
+This interface is the top rung of the view interface hierarchy in `Mvvm/`. It sits in the shared project that both host applications reference, alongside its controller-side counterpart `IMainViewModel` (`Mvvm/IMainViewModel.cs`). Each host project's `DefaultModuleController` imports an `IMainView<...>` and drives the window lifecycle through it (`Show()`, `Close()`, `DataContext`). If it were removed, the controllers in both host projects would have nothing to inject, and the MEF exports on the main windows would lose their target type.
 
 ### Relationships
 
-- **Extends** `IDialogView<TDialogResult>` (`Mvvm/IDialogView.cs`), which in turn extends `IView`. Everything the controller needs for the main window (`Show`, `Close`, `DataContext`, `DialogResult`) is inherited; this interface only contributes geometry.
-- **Implementors (MEF exports):**
-  - `UserForm` (`WinFormsApp1/View/UserForm.cs`) — `[Export(typeof(IMainView<DialogResult, int>))]`, a `System.Windows.Forms.DialogResult`-typed dialog result with `int` pixel geometry. Its `Left`/`Top`/`Width`/`Height` come from the underlying `Form`.
-  - `UserView` (`WpfApp1/View/UserView.xaml.cs`) — `[Export(typeof(IMainView<bool?, double>))]`, a WPF `Window` with nullable-bool result and `double` geometry.
-- **Callers:** the two `DefaultModuleController` classes import the interface as a typed constructor argument. They only use the inherited members (`Show`, `Close`, `DataContext`); in this repository nothing reads or writes `Left`/`Top`/`Width`/`Height`.
+- **Extends** `IDialogView<TDialogResult>` (`Mvvm/IDialogView.cs`), which extends `IView` (`Mvvm/IView.cs`). From `IDialogView` it inherits `DialogResult`, the `Closing`/`Closed` events, `Show()` and `Close()`; from `IView` it inherits `DataContext`. This file itself adds only the four geometry properties below.
+- **Implemented by** two MEF exports:
+  - `UserForm` (`WinFormsApp1/View/UserForm.cs`) as `IMainView<DialogResult, int>` — its `Left`/`Top`/`Width`/`Height` come straight from `System.Windows.Forms.Form` (which uses `int`).
+  - `UserView` (`WpfApp1/View/UserView.xaml.cs`) as `IMainView<bool?, double>` — a WPF `Window` whose geometry properties are `double`.
+- **Consumed by** the two `DefaultModuleController` classes (`WinFormsApp1/Controller/DefaultModuleController.cs`, `WpfApp1/Controller/DefaultModuleController.cs`), which receive the instantiated interface via their `[ImportingConstructor]`, set `MainView.DataContext` to the view model, and call `Show()`/`Close()` in `Run()`/`Shutdown()`. The generic arguments at each call site must exactly match the corresponding `[Export]` attribute or MEF composition fails.
 
 ### Behavior & Details
 
-`TDimension` is a second generic parameter because the two UI frameworks disagree on the type of window geometry: WinForms uses `int` (device pixels), WPF uses `double` (device-independent units). The `TDimension` type therefore carries framework semantics without the interface knowing which host it is in.
+The interface declares four get/set properties — `Left`, `Top`, `Width`, `Height` — all of type `TDimension`. They let controller code position and size the main window through the abstraction (e.g. restoring saved window placement) without touching a concrete `Form` or `Window`. Because the properties are settable, an implementer is expected to write straight through to the framework's own geometry members, as both current implementations do; there is no state of its own to keep in sync.
 
-The four properties — `Left`, `Top`, `Width`, `Height` — are plain get/set geometry. In the WinForms implementations they map directly onto `Form.Left`/`Top`/`Width`/`Height`; in WPF the analogous properties on `Window` are `Left`/`Top`/`Width`/`Height` too, which is what makes one interface cover both hosts.
-
-### Rough edges
-
-- The geometry properties are currently dead weight: no code in this repository reads or writes them. They exist for future positioning/resizing support.
-- The `TDialogResult` parameter duplicates the one from `IDialogView<TDialogResult>` rather than being fixed or redeclared — harmless here, but it means `IMainView` carries a generic parameter it never mentions in its own members.
+There is no logic in this file beyond the contract — it is a pure interface with no default members.

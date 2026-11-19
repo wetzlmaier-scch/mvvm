@@ -1,58 +1,54 @@
-# Mvvm/MainViewModelBase.cs
+# `Mvvm/MainViewModelBase.cs`
 
-### Purpose
-
-`MainViewModelBase` is the abstract base class for the view model that is bound to the application's main window. It exists so that any concrete main view model gets the `IMainViewModel` behaviour — window icon, close-confirmation handling, and app shutdown — for free, without each app reimplementing the plumbing around `Application.Current` and the main window's `Closing` event.
+`MainViewModelBase` is the abstract base class for the view model bound to the application's main window. It exists so that a concrete main view model gets `IMainViewModel` behaviour — window icon loading, window close/shutdown control, and a closable/cancelable shutdown sequence — without repeating the WPF-specific plumbing.
 
 It is a source file defining a single class: `MainViewModelBase`.
 
+### Purpose
+
+The MVVM hierarchy in this codebase roots feature view models at `ViewModelBase` (which provides `IsInDesignMode` and a child view model registry). The main window's view model needs something more: it owns the window itself, so it must set the window icon, be able to shut the application down with a specific exit code, close the window, and give subclasses a chance to cancel closing. `MainViewModelBase` is where that window-level behaviour lives, factored out of concrete view models.
+
 ### Role in the Codebase
 
-It sits in the `Mvvm` project, the shared MVVM layer that the host projects (`WpfApp1`, `WinFormsApp1`) and feature projects (`UserManagement`) all depend on. It is the middle link in the chain:
+It sits in the `Mvvm` project as one of the base-class branches rooted at `ViewModelBase` (its siblings are `DisposableViewModelBase` and `ValidatableViewModelBase`). It is the only class in the repository that implements `IMainViewModel`, so module controllers and the main window's data context resolve `IMainViewModel` and actually get this class's behaviour.
 
-- It inherits from `ViewModelBase` (`Mvvm/ViewModelBase.cs`), which supplies `INotifyPropertyChanged` via CommunityToolkit.Mvvm's `ObservableObject`, the `IsInDesignMode` flag, and the child-view-model close cascade (`OnClosing()` / `OnClosed()`).
-- It implements `IMainViewModel` (`Mvvm/IMainViewModel.cs`), whose members are `Icon`, `CloseWindow()`, and `Shutdown(int)`.
-
-The concrete main view model in this repository is `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`), which extends `MainViewModelBase` and registers itself with MEF via `[Export(typeof(IMainViewModel))]`. `DefaultModuleController` in both host projects imports that export and assigns it as the main view's `DataContext`.
+The one concrete subclass is `UserViewModel` (`UserManagement/ViewModel/UserViewModel.cs`), which is exported via MEF as both `IUserViewModel` and `IMainViewModel` and serves as the main window's data context. If this class were removed, `IMainViewModel` would have no implementation, the main window would lose its icon, and `UserViewModel` could no longer be exported as `IMainViewModel`.
 
 ### Relationships
 
-**Inherits `ViewModelBase`** (same project, `Mvvm/ViewModelBase.cs`). What this class inherits from there:
-
-- `IsInDesignMode` — a cached, static design-time check (also true when running under Visual Studio's `devenv` process).
-- `OnClosing()` — returns `true`/`false` after asking every registered child view model (`RegisterChildViewModel`) whether it agrees to close.
-- `OnClosed()` — walks the registered child view models and tells each it has been closed.
-
-What this class adds is the `IMainViewModel` contract plus the WPF-side wiring:
-
-- `Icon` property: `protected MainViewModelBase()` calls `AssemblyHelper.LoadApplicationIcon()` (`Common/Reflection/AssemblyHelper.cs`), which reads the embedded `<assembly name>.App.ico` manifest resource from the entry assembly as a GDI `Icon`. It then converts it to a WPF `BitmapSource` via `BitmapSourceHelper.LoadBitmap(Bitmap)` (`Common/Windows/Media/Imaging/BitmapSourceHelper.cs`) and assigns the result to the `Icon` property. The `Icon` setter is `private`, so it can only ever be set by this constructor.
-- `Shutdown(int exitCode)` and `CloseWindow()`: both delegate to `Application.Current`, so the view model can end the application or close the main window without any host-specific code.
-- `MainWindow_Closing` / `OnClosing(CancelEventArgs)`: a private handler subscribes to the main window's `Closing` event in the constructor and routes it into the overridable `OnClosing(CancelEventArgs)` method, which bridges the WPF event to `ViewModelBase`'s child-cascade.
+- Inherits from `ViewModelBase` (`Mvvm/ViewModelBase.cs`). Inherited: `IsInDesignMode`, the `ObservableObject` binding infrastructure, and the protected `OnClosing()` / `OnClosed()` child-lifecycle hooks. The base class keeps a list of child view models registered via `RegisterChildViewModel` and fans its own `OnClosing()` / `OnClosed()` calls out to them; this class is the only place in the repository that actually triggers those hooks, by translating the window's `Closing` event into them.
+- Implements `IMainViewModel` (`Mvvm/IMainViewModel.cs`): `Icon`, `CloseWindow()`, and `Shutdown(int)`.
+- Calls `AssemblyHelper.LoadApplicationIcon()` (`Common/Reflection/AssemblyHelper.cs`), which reads the embedded `<entryAssemblySimpleName>.App.ico` manifest resource from the entry assembly and returns a `System.Drawing.Icon`.
+- Calls `BitmapSourceHelper.LoadBitmap(Bitmap)` (`Common/Windows/Media/Imaging/BitmapSourceHelper.cs`) to convert that GDI+ icon into a WPF `BitmapSource` for the `Icon` property.
 
 ### Behavior & Details
 
 **Constructor** (`protected MainViewModelBase()`):
 
-1. If in design mode, or if `Application.Current?.MainWindow` is null, it returns immediately — no icon loading, no event hookup. That means the icon and the closing hook only ever exist once a main window actually exists at construction time.
-2. Subscribes `MainWindow_Closing` to `mainWindow.Closing`.
-3. Loads the entry assembly's `.App.ico` and converts it to `Icon`. If there is no embedded icon, `Icon` stays `null`.
+1. If in design mode, return immediately — no window hook-up, no icon. This matters because designers (and the `devenv` process detection in `ViewModelBase.IsInDesignModeStatic`) construct view models without a running `Application`.
+2. If `Application.Current?.MainWindow` is null, return. This keeps the class usable in hosts where there is no main window (for example the console host, where `UserViewModel` still exists but `Application.Current` is absent).
+3. Subscribes to `MainWindow.Closing` — this is what activates the otherwise dormant child-view-model lifecycle in `ViewModelBase`.
+4. Loads the application icon. If both `LoadApplicationIcon()` and the bitmap conversion succeed, assigns the result to `Icon`; otherwise `Icon` stays null, which the interface declares as acceptable.
 
-Note that `MainWindow_Closing` is subscribed but never unsubscribed, and the constructor holds no reference to the window beyond the event subscription itself.
+Note the side effect: the constructor permanently adds a `Closing` handler to the main window. There is no unsubscribe, so the lifetime of a `MainViewModelBase` instance is effectively tied to the window's lifetime.
 
-**`OnClosing(CancelEventArgs)`** (`protected virtual`): the central close-confirmation flow:
+**Closing flow:** the private `MainWindow_Closing` handler calls the virtual `OnClosing(CancelEventArgs)`, which:
 
-1. Calls the inherited parameterless `OnClosing()`, which folds the results of every registered child view model.
-2. If any child refused, sets `e.Cancel = true` and stops there — the window stays open and `OnClosed()` is not invoked.
-3. Otherwise calls `OnClosed()`, which notifies all registered child view models that the app is closing.
+1. Calls the inherited parameterless `OnClosing()` — the base implementation aggregates over all child view models with `&`, so a single child returning false makes the whole app refuse to close.
+2. If that returns false, sets `e.Cancel = true` and the window stays open.
+3. Otherwise calls `OnClosed()`, which propagates down to children.
 
-Because `ViewModelBase.OnClosing()` aggregates children with `&` (not short-circuit `&&`), every child gets asked even after one refuses.
+Subclasses override `OnClosing(CancelEventArgs)` (not the parameterless one) if they need to inspect the event or participate in cancellation; the parameterless pair is for the child-tree fan-out.
 
-**`Shutdown(int exitCode)`**: calls `Application.Current?.Shutdown(exitCode)`. Guarded by `IsInDesignMode` and a null-conditional on `Application.Current`, so it is a no-op in the designer or before the application is created.
+**`Shutdown(int exitCode)`**: no-op in design mode; otherwise calls `Application.Current?.Shutdown(exitCode)`.
 
-**`CloseWindow()`**: closes `Application.Current?.MainWindow` the same guarded way. Unlike `Shutdown`, it does not pass an exit code; the exit code comes from the window's `Close` result.
+**`CloseWindow()`**: no-op in design mode; otherwise closes `Application.Current?.MainWindow`.
+
+**`Icon`**: `ImageSource?` with a private setter. Nullable by design — set only if the embedded `.App.ico` resource exists and converts successfully.
+
+One caveat: `BitmapSourceHelper.LoadBitmap(Bitmap)` wraps the icon's GDI+ handle in a WPF bitmap source via `Imaging.CreateBitmapSourceFromHBitmap`, and the intermediate `Icon` (and its `Bitmap` inside it) is never explicitly disposed after the `ToBitmap()` call — the HBITMAP handed to WPF is owned by WPF, but the `Icon` object itself goes out of scope without disposal.
 
 ### Rough edges
 
-- The `Closing` handler is subscribed in the constructor but never unsubscribed, and the icon is only loaded at construction time. Since the view model is created before `DefaultModuleController.Run()` shows the window, a scenario where the main window is replaced after construction would leave `Icon` stale and the old window's `Closing` still wired.
-- `Shutdown(int)` and `CloseWindow()` are declared in `IMainViewModel`, but in the host projects `DefaultModuleController` instead calls `MainView.Close()` directly; only the view model's own internal flow drives these members.
-- There is no override of `OnClosing(CancelEventArgs)` or `OnClosed()` in the one concrete subclass (`UserViewModel`), so today the class behaves exactly like its base in those paths; the hooks are purely the extension point for future subclasses.
+- The design-mode check in the constructor only guards the first line; `Shutdown` and `CloseWindow` guard themselves, but the `Closing` handler and `OnClosing(CancelEventArgs)` do not. In practice the handler is only attached when not in design mode, so this is consistent, just uneven in form.
+- The constructor depends on `Application.Current?.MainWindow` already being set at construction time. A `MainViewModelBase` instance created before the main window exists (for example very early in startup, or in a unit test) silently skips the icon and the `Closing` subscription, leaving `Icon` null and the child lifecycle unhooked — with no way to repair that later, since the wiring happens only in the constructor.

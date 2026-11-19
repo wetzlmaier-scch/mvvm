@@ -1,22 +1,29 @@
 ### Purpose
-`Mvvm/MessageResult.cs` defines `MessageResult`, a single platform-neutral enum that names the possible outcomes of a message-box question (OK, Cancel, Yes, No, and friends). It exists so the `Mvvm` core contract and all its UI-specific implementations can talk about user dialog answers without depending on WinForms, WPF, or the console.
+
+`Mvvm/MessageResult.cs` defines `MessageResult`, a single platform-neutral enum that names the possible outcomes of a message-box question. It exists so the `Mvvm` core project — which has no dependency on WPF or WinForms — can specify what an `IMessageService` question method returns, while each platform satellite project does the actual casting from its native result type.
 
 ### Role in the Codebase
-This is a shared data type in the core `Mvvm` project (the `Mvvm.csproj` library), sitting right next to `IMessageService` in the same folder. It makes no decisions itself; it only supplies the return type for the three question methods. Removing it would break the signature of `IMessageService` and every implementation of that interface, so it is load-bearing for the whole messaging subsystem.
+
+The `Mvvm` project is the shared, framework-agnostic core: interfaces and base types that the satellite adapters (`Mvvm.Wpf`, `Mvvm.Winforms`, `Mvvm.Console`) implement. `MessageResult` sits alongside `IMessageService` as its companion value type. Without it the three `Show*Question` methods on `IMessageService` would have no return type to speak of, and the WPF/WinForms adapters could not share a contract with callers.
 
 ### Relationships
-- `IMessageService` (`Mvvm/IMessageService.cs`) declares `MessageResult ShowYesNoCancelQuestion(...)`, `ShowYesNoQuestion(...)`, and `ShowOkCancelQuestion(...)`. Callers anywhere in the app that ask a question through that interface compare the returned value against these enum members.
-- The implementations cast their platform-specific dialog results directly to this type:
-  - `Mvvm.Winforms/MessageService.cs` — casts WinForms `MessageBox.Show` results (`MessageBoxButtons`), e.g. `(MessageResult)MessageBox.Show(...)`.
-  - `Mvvm.Wpf/MessageService.cs` — casts WPF `MessageBoxResult` the same way.
-  - `Mvvm.Console/MessageService.cs` — declares the question methods but throws `NotImplementedException`, so the console host never actually produces a result.
+
+- **`IMessageService`** (`Mvvm/IMessageService.cs`, same namespace) declares `MessageResult ShowYesNoCancelQuestion(...)`, `ShowYesNoQuestion(...)`, and `ShowOkCancelQuestion(...)`. Any view model that asks the user a yes/no-style question through this interface receives a `MessageResult` and switches on it — that is the primary consumer pattern.
+- **`Mvvm.Wpf/MessageService.cs`** casts WPF's `MessageBoxResult` straight to `MessageResult`: `(MessageResult)MessageBox.Show(message, caption, MessageBoxButton.YesNoCancel, MessageBoxImage.Question, MessageBoxResult.Cancel)`.
+- **`Mvvm.Winforms/MessageService.cs`** casts WinForms' `DialogResult` the same way: `(MessageResult)MessageBox.Show(message, caption, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2)`.
+- **`Mvvm.Console/MessageService.cs`** never produces a `MessageResult` — its question methods throw `NotImplementedException`.
 
 ### Behavior & Details
-The member numbering is the important part. `None` through `No` are assigned `0`–`7`, matching WinForms' `DialogResult`/`MessageBoxButtons` values exactly, and `TryAgain = 10` and `Continue = 11` match the corresponding WPF `MessageBoxResult` members (8 and 9 are unused in WPF, which is why there is a gap before 10).
 
-That alignment is what makes the implementations' unchecked casts work: WinForms `MessageBoxButtons.YesNoCancel`/`YesNo`/`OKCancel` return 1, 2, 6, or 7, and WPF returns the same numbers for `OK`/`Cancel`/`Yes`/`No`, so a plain `(MessageResult)` cast yields the right member on both platforms without any mapping table.
+The enum members are deliberately numbered to mirror both WPF's `MessageBoxResult` and WinForms' `DialogResult`:
 
-Two consequences to know before touching this enum:
+- `None = 0`, `OK = 1`, `Cancel = 2`, `Abort = 3`, `Retry = 4`, `Ignore = 5`, `Yes = 6`, `No = 7`
+- Then a gap: `TryAgain = 10` and `Continue = 11`
 
-- The values are a contract, not just labels. Renumbering any member (or inserting a new one in the middle) silently corrupts the casts in `Mvvm.Winforms` and `Mvvm.Wpf` — the cast still compiles, but callers receive the wrong answer. Any change must keep the numbers aligned with both WinForms and WPF message-box enums.
-- Several members are defined but unreachable: `None`, `Abort`, `Retry`, `Ignore`, `TryAgain`, and `Continue` can never be returned by the three `IMessageService` question methods, which only ever offer OK/Cancel, Yes/No, or Yes/No/Cancel button sets. They exist solely to preserve the numeric alignment with the framework enums.
+`8` and `9` are absent because both framework enums leave them unused; `MessageResult` preserves that hole rather than renumbering. This numeric alignment is exactly what makes the `(MessageResult)` casts in the WPF and WinForms `MessageService` implementations safe today — nothing in the compiler enforces the correspondence.
+
+Only a small subset is actually reachable through `IMessageService`: `OK`, `Cancel`, `Yes`, and `No` are the outcomes its button sets can return. The rest (`Abort`, `Retry`, `Ignore`, `TryAgain`, `Continue`) are carried for parity with the platform enums but no `IMessageService` method can produce them.
+
+### Rough edges
+
+The cast safety in the WPF/WinForms adapters depends entirely on this enum's values staying numerically locked to two third-party enums. A future renumbering or value addition here would silently corrupt the adapters' unchecked casts with no compile-time warning.

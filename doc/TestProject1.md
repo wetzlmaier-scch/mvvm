@@ -1,44 +1,39 @@
 ### Purpose
 
-`TestProject1` is the sole unit test project in the repository. It provides automated verification for the user-management MVVM stack, specifically ensuring that `UserViewModel` correctly validates input, persists data via `IUserService`, and synchronizes state between child view models using `WeakReferenceMessenger`. The contents belong together because they define the testing environment, configuration, and logic required to isolate and validate the WPF-based view models without running the full application.
+`TestProject1` is the unit test project for the user management view-models. It isolates the presentation logic of `AddUserViewModel` and `ShowUsersViewModel` from the rest of the application, allowing you to verify validation rules, error handling, and data population without needing a live database or UI.
+
+The directory serves as a single, focused test suite. It contains only what is necessary to test the view-model layer: a configuration file for the test runner and the test class itself. Its primary goal is to provide fast feedback on changes to the user management UI logic.
 
 ### Software Components
 
-This directory contains C# source code structured around two main components:
+The directory contains one executable component:
 
-*   **Test Suite:** The primary component is [UserViewModelTest](TestProject1/UserViewModelTest.md). This test class exercises the `UserViewModel` and its child components (`AddUserViewModel` and `ShowUsersViewModel`). It uses Moq to mock `IUserService` and `IMessageService`, allowing the tests to verify business logic (like saving users and fetching active lists) and UI state updates (like clearing fields and populating collections) without a running WPF window.
-*   **Test Configuration:** The secondary component is [MSTestSettings.cs](TestProject1/MSTestSettings.md). This file configures the MSTest framework for the assembly, specifically setting the default parallelization scope for test execution.
+*   **`UserViewModelTest`**: Defined in [UserViewModelTest.cs](TestProject1/UserViewModelTest.md), this class holds the unit tests for `AddUserViewModel` and `ShowUsersViewModel`. It uses Moq to mock `IUserService` and `IMessageService`, ensuring the tests run in isolation.
+
+The directory also contains one configuration file:
+
+*   **`MSTestSettings.cs`**: This file configures the MSTest v2 runner for the entire assembly. It is not a software component in the traditional sense but defines how the tests are executed.
 
 ### Relationships
 
-The relationship between the two components is one of override. `MSTestSettings.cs` declares an assembly-level attribute to run test methods in parallel (`ExecutionScope.MethodLevel`). However, the `UserViewModelTest` class explicitly opts out of this behavior using the `[DoNotParallelize]` attribute. This ensures that all current tests run serially in a single process. This serial execution is necessary because the view models under test rely on `WeakReferenceMessenger`, a process-wide static singleton; running tests in parallel could cause state leaks between test cases (e.g., duplicate user entries in the collection).
+The relationship within this directory is straightforward: `MSTestSettings.cs` defines the execution environment, and `UserViewModelTest.cs` contains the logic that runs within it.
 
-Additionally, the test project depends on the `BusinessLayer` and `UserManagement` projects. The tests bypass the MEF (Managed Extensibility Framework) container used in the production app by directly assigning mocked dependencies to the view model properties. This allows the tests to run in a console-like environment despite targeting `net10.0-windows`, primarily to satisfy dependencies of the `MainViewModelBase` class.
+`MSTestSettings.cs` enables method-level parallelization for the whole assembly. However, `UserViewModelTest.cs` explicitly opts out of this via the `[DoNotParallelize]` attribute. This is necessary because the tests rely on `WeakReferenceMessenger.Default`, a global static instance. If tests ran in parallel, they would interfere with each other's messenger subscriptions. Therefore, the parallelization setting currently has no practical effect on this project, as `UserViewModelTest` is the only test class.
 
 ```mermaid
 flowchart TD
     subgraph "TestProject1"
-        Config[MSTestSettings.cs<br/>Assembly Config]
-        TestSuite[UserViewModelTest.cs<br/>Test Class]
+        Settings[MSTestSettings.cs]
+        Tests[UserViewModelTest.cs]
     end
-
-    subgraph "External Dependencies"
-        MSTest[MSTest Framework]
-        Moq[Moq Library]
-        UserMgmt[UserManagement Project]
-        BizLayer[BusinessLayer Project]
-    end
-
-    Config -.->|Overrides default scope for| MSTest
-    TestSuite -.->|Uses attributes from| MSTest
-    TestSuite -.->|Mocks interfaces from| BizLayer
-    TestSuite -->|Tests behavior of| UserMgmt
-    TestSuite -.->|Uses| Moq
+    
+    Settings -->|Enables assembly-level parallelization| Tests
+    Tests -->|Opt-out via [DoNotParallelize]| Settings
 ```
 
 ### Rough edges
 
-The assembly-level parallelization setting in `MSTestSettings.cs` is currently ineffective (dead configuration) because the only test class in the project, `UserViewModelTest`, explicitly disables parallel execution with `[DoNotParallelize]`. The setting would only become active if a new test class were added that does not opt out.
+The assembly-level parallelization in `MSTestSettings.cs` is currently ineffective because the only test class, `UserViewModelTest`, opts out. This creates a misleading configuration: new developers might assume tests run in parallel and fail to protect against shared static state when adding new test classes. Additionally, `UserViewModelTest`'s `Teardown` does not clean up messenger subscriptions for the root `UserViewModel`, leading to accumulated dead registrations in the global messenger during test runs.
 
 ## Contents
 - [MSTestSettings.cs](TestProject1/MSTestSettings.md)

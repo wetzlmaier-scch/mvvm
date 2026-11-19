@@ -1,33 +1,29 @@
 ### Purpose
 
-`Common/Diagnostics` contains a single static utility class, [ExtendedGuard](Common/Diagnostics/ExtendedGuard.md), that enforces argument preconditions for collection membership. It supplements the standard `Guard` library by providing `Contains` and `NotContains` assertions that throw `ArgumentException` if a collection unexpectedly does or does not contain a specific item. This ensures that add and remove operations in the View Model layer fail loudly rather than silently producing duplicates or no-ops.
+`Common/Diagnostics` is a utility folder within the `Common` project dedicated to argument validation helpers. It currently contains a single source file, `ExtendedGuard.cs`, which provides static methods for checking collection membership. The directory exists to centralize these specific preconditions so that view models can verify state changes without duplicating logic.
 
 ### Software Components
 
-The directory consists solely of `ExtendedGuard.cs`, which defines the `ExtendedGuard` class. This class provides two generic methods:
-*   [Contains](Common/Diagnostics/ExtendedGuard.md): Asserts that an item exists in an `ICollection<T>`.
-*   [NotContains](Common/Diagnostics/ExtendedGuard.md): Asserts that an item does not exist in an `ICollection<T>`.
-
-Both methods accept the collection, the item to test, and a string name intended for error messages. The class has no dependencies on other project code, relying only on `System.Collections.Generic`.
+The only component here is `ExtendedGuard`, a static class defined in `ExtendedGuard.cs`. It offers two generic methods, [Contains](Common/Diagnostics/ExtendedGuard.md) and [NotContains](Common/Diagnostics/ExtendedGuard.md), which act as guards for adding or removing items from collections. These methods throw an `ArgumentException` if the membership condition is not met.
 
 ### Relationships
 
-`ExtendedGuard` is a leaf utility with no internal dependencies within the `Common` project. Its only consumer is `Mvvm/ViewModelBase.cs`. Specifically, `ViewModelBase.RegisterChildViewModel` calls `ExtendedGuard.NotContains` to prevent duplicate child View Models, while `ViewModelBase.UnregisterChildViewModel` calls `ExtendedGuard.Contains` to ensure a child is registered before removal. `ViewModelBase` uses both this custom guard and the standard MVVM toolkit `Guard` for null checks, treating `ExtendedGuard` as a specialized addition for collection logic.
+`ExtendedGuard` is a leaf dependency with no internal references. It is consumed solely by `Mvvm/ViewModelBase.cs`. Specifically, `ViewModelBase.RegisterChildViewModel` calls `NotContains` to prevent duplicate registrations, while `UnregisterChildViewModel` calls `Contains` to ensure a child exists before removal. The class complements the standard MVVM toolkit `Guard` by handling collection-specific logic that the standard library omits.
 
 ```mermaid
 flowchart TD
     subgraph "Mvvm"
-        VM[ViewModelBase.cs]
+        VMBase[ViewModelBase.cs]
     end
     subgraph "Common/Diagnostics"
-        EG[ExtendedGuard]
+        ExtGuard[ExtendedGuard.cs]
     end
-    VM -->|calls Contains/NotContains| EG
+    VMBase -->|calls| ExtGuard
 ```
 
 ### Rough edges
 
-The `name` parameter in both methods is never used in the exception messages. The error strings hard-code the literal text `"'{name}'"` instead of interpolating the variable, meaning the thrown exception does not identify which specific argument failed, rendering the parameter dead code.
+The `name` parameter accepted by `ExtendedGuard` methods is not interpolated into the exception messages. Consequently, the thrown errors contain the literal string `{name}` rather than the specific argument name, which reduces diagnostic value.
 
 ## Contents
 - [ExtendedGuard.cs](Common/Diagnostics/ExtendedGuard.md)

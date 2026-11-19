@@ -1,38 +1,51 @@
+# Logging/LoggingService.cs
+
 ### Purpose
 
-`LoggingService` is the concrete logging implementation of this application. It exists so that business code and view models can log through a single, Serilog-backed facade without touching Serilog or `Microsoft.Extensions.Logging` directly. It is the runtime counterpart to `ILoggingService` (defined in `Logging/ILoggingService.cs`): the interface is what everyone else sees, this class is what actually writes the log lines.
+`LoggingService` is the concrete logging implementation for the solution. It exists to give the application one logging facade backed by Serilog: every log line is written both to a daily-rolling log file and to the debugger, with the process thread's identity baked into every entry.
+
+The class is declared `[Export(typeof(ILoggingService))]` (from `System.ComponentModel.Composition`), so it is composed in via MEF rather than instantiated directly. Callers depend on the interface, never on this class.
+
+It implements `ILoggingService` (defined in `Logging/ILoggingService.cs`), which extends Microsoft's `ILogger` and adds a full set of convenience overloads (`LogDebug`, `LogInformation`, `LogError`, and friends) so callers can log without spelling out the level or constructing an `EventId`.
 
 ### Role in the Codebase
 
-This class is the single implementer of `ILoggingService` in the repository. It is declared `[Export(typeof(ILoggingService))]` (`System.ComponentModel.Composition`), so it is composed in via MEF rather than constructed manually — callers such as `BusinessLayer/UserService.cs` and `UserManagement/ViewModel/AddUserViewModel.cs` just declare an `ILoggingService` property and receive this instance at runtime. Removing it would break the MEF composition for every class that imports `ILoggingService`.
+It is the sole implementation of `ILoggingService` in the repository and the functional core of the small `Logging` class library (`Logging/Logging.csproj`, a `net10.0` class library).
+
+Two projects reference this library: `BusinessLayer` and `UserManagement`. Neither contains a `[Import]` of `ILoggingService` in its source, so the export is currently not consumed anywhere in the repository; the `Logging` project simply builds and is referenced for potential use. If the class were removed, those references would lose the only concrete `ILoggingService` in the solution.
 
 ### Relationships
 
-- **Implements `ILoggingService`** (in `Logging/ILoggingService.cs`), which itself extends `Microsoft.Extensions.Logging.ILogger`. So this class must satisfy two sets of members: the `ILogger` contract (`Log<TState>`, `IsEnabled`, `BeginScope`) and the interface's per-level convenience methods.
-- **Wraps `Microsoft.Extensions.Logging.ILogger`** privately, produced through `Serilog.Extensions.Logging`'s `SerilogLoggerFactory` over a configured Serilog `Logger`. All methods are one-line delegations to that field.
-- **Callers** log through the interface only; the concrete class is referenced nowhere outside its own file.
+- **`ILoggingService`** (`Logging/ILoggingService.cs`): the contract implemented here. It extends `Microsoft.Extensions.Logging.ILogger` and declares the level-specific `Log*` convenience overloads plus three `Log(LogLevel, ...)` overloads.
+- **`Microsoft.Extensions.Logging`** (NuGet package): provides the `ILogger`, `LogLevel`, and `EventId` types. The private `_logger` field is an `ILogger` created from a `SerilogLoggerFactory`.
+- **Serilog** and its sink/enricher packages (`Serilog`, `Serilog.Sinks.File`, `Serilog.Sinks.Debug`, `Serilog.Enrichers.Thread`, `Serilog.Extensions.Logging`): the actual logging engine, file sink, debugger sink, thread enrichers, and the bridge that lets Serilog produce an `ILogger`.
+- **`System.ComponentModel.Composition`** (NuGet package): supplies the `[Export]` attribute that publishes this class to MEF. Host applications build their composition container via `Common/Composition/CompositionHelper.cs`, which catalogues assemblies in the output directory; if `Logging.dll` is present, its `LoggingService` export becomes resolvable by any `[Import]` of `ILoggingService`.
 
 ### Behavior & Details
 
-The entire configuration lives in the initializer of the `_logger` field:
+**Logger setup (field initializer).** The single `_logger` field is constructed once, when the class is instantiated, and is the target of every method in the class. It is built as a `SerilogLoggerFactory` logger configured with:
 
-- **Enrichers:** each log event is enriched with the thread ID, thread name, and a `CategoryName` property. The category name is set via the private nested `CategoryNameEnricher` to `string.Empty` — so every event carries `CategoryName` = "" (see "Rough edges" below).
-- **Minimum level:** `Debug` — `Trace` messages are filtered out before they reach any sink, even though `LogTrace` methods exist.
-- **Sinks:**
-  - File: `Hargassner.Teststand-.log` (a literal filename; no date component in the name — the date is supplied by Serilog's daily rolling). Daily rolling, keeping the last 5 files.
-  - Debug window, with an explicit template: `{Timestamp:HH:mm:ss} [{Level}] [{CategoryName}] [{ThreadId}] [{ThreadName}] {Message}{NewLine}{Exception}`.
-- **The logger is created with category `string.Empty`** (`CreateLogger(string.Empty)`), so no per-caller category distinction is possible — all output shares one category.
+- `.Enrich.WithThreadId()` and `.Enrich.WithThreadName()` — every event carries the originating thread's ID and name.
+- `.Enrich.With(new CategoryNameEnricher(string.Empty))` — a nested private enricher class that attaches a `CategoryName` property to every event. Because `CreateLogger(string.Empty)` is used, the category name is always the empty string, so every entry gets `CategoryName = ""`.
+- `.MinimumLevel.Debug()` — everything at `Debug` and above is emitted; `Trace` events are dropped at the minimum-level gate.
+- `.WriteTo.File(path: "Hargassner.Teststand-.log", rollingInterval: RollingInterval.Day, retainedFileCountLimit: 5)` — a daily-rolling file, keeping the last 5 days, written to the process's current working directory.
+- `.WriteTo.Debug(outputTemplate: ...)` — a mirror to the debugger with a fixed template of `Timestamp`, `Level`, `CategoryName`, `ThreadId`, `ThreadName`, `Message`, and `Exception`.
 
-The members then split into two groups:
+The `LogLevel` values used are from `Microsoft.Extensions.Logging` (e.g. `LogLevel.Debug`), while the enricher (`ILogEventEnricher`) and `LogEvent` types come from `Serilog.Core`/`Serilog.Events` — the two namespaces are bridged by `Serilog.Extensions.Logging`.
 
-- **`ILogger` members** — `Log<TState>`, `IsEnabled`, and `BeginScope` are pure pass-throughs to the wrapped logger.
-- **Convenience methods** — one set of four `Log{Debug,Trace,Information,Warning,Error,Critical}` overloads (with/without `EventId`, with/without `Exception`), plus three `Log(LogLevel, ...)` overloads. Each is a one-line call to `_logger.Log(...)` at the fixed level. The `Log(LogLevel, ...)` overloads with no `EventId` pass `EventId` 0.
+**Delegating methods.** Every public method in the class is a thin one-line delegation to `_logger`:
 
-Since every method is a delegation, there is no state, no retry, no buffering of its own; behaviour is entirely Serilog's.
+- `Log<TState>(...)`, `IsEnabled(...)`, `BeginScope<TState>(...)` forward the `ILogger` contract members verbatim.
+- The `LogDebug`/`LogTrace`/`LogInformation`/`LogWarning`/`LogError`/`LogCritical` overloads each fix a `LogLevel` and forward to `_logger.Log(...)`. For `LogTrace`, the events are generated by Serilog but suppressed by the `MinimumLevel.Debug()` sink threshold, so they never actually reach the file or debugger sinks in the default configuration.
+- The three `Log(LogLevel, ...)` overloads let callers pick the level at call time; the two without an `EventId` pass `0` to Serilog.
+
+There is no additional state, no error handling, and no async paths — every call is a synchronous forward to the underlying Serilog `ILogger`.
+
+**The `CategoryNameEnricher` nested class.** A primary-constructor class implementing `ILogEventEnricher` that adds a `CategoryName` property (from its constructor argument) to each `LogEvent` if not already present. The only instance in this file is created with `string.Empty`, so the property is always the empty string; the class is `private` and not exported.
 
 ### Rough edges
 
-- `CategoryNameEnricher` is constructed with `string.Empty`, so the `CategoryName` property it adds is always empty — the enricher (and the `{CategoryName}` placeholder in the Debug template) currently adds noise rather than information.
-- The file sink path `Hargassner.Teststand-.log` is a hard-coded literal, so all output goes to one file regardless of which class logged it, and the `CreateLogger(string.Empty)` category is similarly a constant, making per-source filtering impossible.
-- `LogTrace` methods exist, but the configured `MinimumLevel.Debug()` discards trace events, so they silently write nothing.
-- The logger is built once per `LoggingService` instance in a field initializer; there is no way to reconfigure sinks or levels after construction.
+- **Trace-level methods are dead code in practice.** `LogTrace(...)` events are generated, but the logger's `.MinimumLevel.Debug()` threshold drops them before they reach either sink, so nothing logged via `LogTrace` appears in the file or debugger.
+- **`CategoryName` is always empty.** `CreateLogger(string.Empty)` plus `new CategoryNameEnricher(string.Empty)` means the `CategoryName` field in the debug template is always `[]`; the enricher does not vary with the calling site.
+- **Log file path is hard-coded and CWD-relative.** `"Hargassner.Teststand-.log"` lands in the process's current working directory with a fixed 5-day retention; there is no configuration surface, and the name is specific to one project despite the class being in a shared library.
+- **The `[Export]` is currently unconsumed.** No `[Import]` of `ILoggingService` exists in the repository's source, so nothing resolves this export today; the `Logging` project is referenced by `BusinessLayer` and `UserManagement` but not visibly used by them.

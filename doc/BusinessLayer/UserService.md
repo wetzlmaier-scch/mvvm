@@ -1,40 +1,34 @@
-# `BusinessLayer/UserService.cs`
-
-`UserService` is the business-logic component for user management. It implements `IUserService` (defined in `BusinessLayer/IUserService.cs`) and provides two operations: `GetActiveUsers()` and `AddUser(UserDto)`.
+`BusinessLayer/UserService.cs`
 
 ### Purpose
-
-This class sits between the `UserManagement` view-models and the NHibernate-based data access layer. It handles user queries and creates a new user when a valid `UserDto` is passed to it. When a save fails, it logs the error and wraps the exception in `BusinessLayerException` so callers only need to know one exception type for business failures.
+`UserService` is the business-layer service for user management. It provides the two operations the application's user features need: listing active users and creating a new one. It is the concrete implementation of `IUserService` (defined in `BusinessLayer/IUserService.cs`), and it's wired into the application as a MEF component via `[Export(typeof(IUserService))]`, so consumers receive it through the interface without knowing this class exists.
 
 ### Role in the Codebase
+This class sits in `BusinessLayer/`, which holds the application's business logic as MEF-exported services behind interfaces. `UserService` is one such service; the MEF container composes it with `IRepositoryFactory` (and, for callers that need logging, an `ILoggingService`).
 
-The class lives in `BusinessLayer/` and is wired up via MEF. The `[Export(typeof(IUserService))]` attribute publishes it to the composition container; consumers (such as `ShowUsersViewModel` and `AddUserViewModel` in `UserManagement/ViewModel/`) import it via `[Import] public IUserService UserService`. The `[ImportingConstructor]` on the constructor tells MEF to inject `IRepositoryFactory`.
+The concrete callers that depend on it are in the WPF `UserManagement` project: `UserManagement/ViewModel/ShowUsersViewModel.cs` and `UserManagement/ViewModel/AddUserViewModel.cs` both hold a settable `IUserService` property (presumably populated by MEF via `[Import]`-style composition), and `TestProject1/UserViewModelTest.cs` mocks `IUserService` to test those view models. If this class were removed, the MEF container would have nothing to satisfy the `IUserService` export, and the user view models in `UserManagement` would have no real backend.
 
 ### Relationships
-
-- **`IUserService`** (`BusinessLayer/IUserService.cs`) — the contract implemented here. It declares both operations plus a `LoggingService` property.
-- **`IRepositoryFactory`** (`BusinessLayer/IRepositoryFactory.cs`) — injected via the constructor. This interface extends `IHibernateRepositoryFactory<int>` (`DataAccessLayer.Hibernate/IHibernateRepositoryFactory.cs`), whose `Create()` returns `IHibernateRepository<int>`.
-- **`User`** (`Entity.Hibernate/User.cs`) — the NHibernate entity persisted on save.
-- **`UserDto`** (`Dto/UserDto.cs`) — the data object used at the business-layer boundary.
-- **`BusinessLayerException`** (`BusinessLayer/BusinessLayerException.cs`) — a simple `Exception` wrapper with `(message, inner)`.
-- **`ILoggingService`** (`Logging/ILoggingService.cs`) — declared as a settable property on `IUserService` and implemented here. It is not injected via the constructor; the constructor sets it to `null!` and the composition container is expected to populate it.
-- **Callers** — `ShowUsersViewModel` calls `GetActiveUsers()` on load; `AddUserViewModel` calls `AddUser()` from its save command and catches `BusinessLayerException`.
+- **`IUserService`** (`BusinessLayer/IUserService.cs`): the contract this class implements — `GetActiveUsers()`, `AddUser(UserDto)`, and a `LoggingService` property.
+- **`IRepositoryFactory`** (`BusinessLayer/IRepositoryFactory.cs`): injected through the `[ImportingConstructor]`. This marker interface extends `IHibernateRepositoryFactory<int>` (in `DataAccessLayer.Hibernate`), whose concrete implementation `HibernateRepositoryFactory<TKey>` builds an NHibernate session factory and hands out one repository per `Create()` call.
+- **`User`** (`Entity.Hibernate/User.cs`): the NHibernate entity; `AddUser` builds one from the DTO. `User`'s constructor sets `IsActive = true`, which is why newly created users appear in `GetActiveUsers` results.
+- **`UserDto`** (`Dto/UserDto.cs`): the DTO shape crossing the layer boundary, with `Id`, `FirstName`, `LastName`.
+- **`BusinessLayerException`** (`BusinessLayer/BusinessLayerException.cs`): a plain `Exception` subclass used to wrap failures in `AddUser`.
+- **`ILoggingService` / `LoggingService`** (`Logging/`): optional dependency exposed as a settable property. `LoggingService` is also a MEF export, so the container can inject it if the consuming component declares the import.
 
 ### Behavior & Details
+**`GetActiveUsers`** opens a repository, queries all `User` entities, and projects them into `List<UserDto>` via LINQ-to-NHibernate, mapping only `Id`, `FirstName`, `LastName`. Despite its name, it does not filter on `IsActive` — it returns every user. The repository is `IDisposable`, so the `using` statement closes the underlying NHibernate session when the method completes.
 
-**`GetActiveUsers()`** — Creates a repository, runs a LINQ query over `GetQueryable<User>()`, projects each entity to a `UserDto` (id, first name, last name only), and materializes it with `ToListAsync()`. The NHibernate `IsActive` filter is not applied in this query — the method name suggests it, but the query is unfiltered.
+**`AddUser`** follows a validate–transact–wrap pattern:
 
-**`AddUser(UserDto user)`** —
+1. `CommunityToolkit.Diagnostics.Guard` checks that `user.FirstName` and `user.LastName` are not null or whitespace; a guard failure throws an `ArgumentException` immediately, before any repository is opened.
+2. A repository is created and a transaction started via `repository.UnitOfWork.BeginTransaction()`.
+3. Inside the transaction, a new `User` entity is saved (an NHibernate `Insert`), then the transaction is committed.
+4. If anything throws, the catch block rolls the transaction back, logs the error through `LoggingService.LogError`, and rethrows as a `BusinessLayerException` so callers only ever see that one exception type.
 
-1. Validates the input with `CommunityToolkit.Diagnostics` `Guard` — `FirstName` and `LastName` must be non-null and non-whitespace. These guards throw `ArgumentException`, which is **not** wrapped in `BusinessLayerException`.
-2. Opens a repository and begins a unit-of-work transaction.
-3. Saves a new `User` entity, then commits.
-4. On any exception, rolls back the transaction, logs the error through `LoggingService`, and rethrows as `BusinessLayerException("Error saving user", e)`.
-
-The comment in the code ("only throw a BusinessException") states the intent that callers should only ever see `BusinessLayerException`. In practice, validation failures bypass this because the `Guard` calls throw `ArgumentException` directly.
+**The `LoggingService` property** is `get; set;` with no backing logic — it exists purely so the MEF container can inject a logging implementation into the service. However, the constructor sets it to `null!`, and nothing else in this class assigns it. So in `AddUser`, the `LoggingService.LogError(...)` call will throw a `NullReferenceException` whenever the catch block runs — unless a consumer happens to assign the property after construction. Note that a `null!` suppression at the constructor means the failure surfaces at the log call, not at construction.
 
 ### Rough edges
-
-- `GetActiveUsers()` does not filter by `IsActive`; it returns all users despite the method name.
-- Validation failures in `AddUser` throw `ArgumentException` (from `Guard`), so the "callers only ever see `BusinessLayerException`" contract stated in the code comment is broken on that path.
-- `LoggingService` is a public settable property set to `null!` in the constructor. If MEF does not inject a value before `AddUser` is called and an exception occurs, the log call will throw a `NullReferenceException`.
+- `GetActiveUsers` returns all users, not only active ones, contrary to its name; there is no `IsActive` filter.
+- `AddUser` unconditionally calls `LoggingService.LogError`, but `LoggingService` starts as `null` and is never set here, so the rollback path crashes with a `NullReferenceException` unless the property is externally assigned.
+- `AddUser` does not map `UserDto` validation failures (guard exceptions) into `BusinessLayerException`, only database failures — so the "callers only ever see `BusinessLayerException`" contract holds only for the save step.

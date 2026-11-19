@@ -1,45 +1,57 @@
 ### Purpose
 
-`ConsoleApp1` is a lightweight console host for the `UserManagement` feature, serving as a headless client to verify the system's MEF composition and data access flow. It contains no UI logic or custom business rules; its sole responsibility is to act as a composition root. The contents belong together because they form the minimal executable unit required to initialize the dependency container, resolve the feature’s view models, and execute a simple data workflow (creating and listing users) without a graphical interface.
+`ConsoleApp1` is a .NET console application that serves as the headless executable host for the solution. Its primary responsibility is to verify that the MEF (Managed Extensibility Framework) dependency injection container composes correctly without a UI, then execute a test workload by creating 100 users and displaying them. It belongs together as the simplest entry point in a multi-host solution, sharing the same business logic and data access layers as its WPF and WinForms siblings while removing all presentation dependencies.
 
 ### Software Components
 
-The directory contains one primary source code component and one configuration file.
+The project consists of a single code component: the `Program` class.
 
-*   **Entry Point and Composition Root**: `Program.cs` defines the `Program` class and its `Main` method. This component handles the lifecycle of the application: it constructs the MEF composition container using `CompositionHelper`, resolves the `IUserViewModel` export, and drives the feature logic by invoking `AddUserViewModel.SaveUserAsync()` and `ShowUsersViewModel.OnLoadedAsync()`.
-*   **Runtime Configuration**: `App.config` provides the `ConnectionString` app setting. Although `Program.cs` does not directly read configuration, this file is critical because downstream components (specifically `ModelContext` in the `BusinessLayer`) resolve the connection string from here via `System.Configuration` to connect to the SQL Server database.
+*   **`Program`**: Defined in [Program.cs](ConsoleApp1/Program.md), this class contains the static `Main` method, which acts as the composition root. It is responsible for building the MEF container, resolving the root `UserViewModel`, driving the `AddUserViewModel` to create test data, and driving the `ShowUsersViewModel` to retrieve and print the results. It does not contain any business logic itself; it merely orchestrates the interaction with the shared `UserManagement` and `BusinessLayer` projects.
+
+The project also includes [App.config](ConsoleApp1/App.md), which is a configuration file rather than a software component. It provides the `ConnectionString` required by the data access layer at runtime.
 
 ### Relationships
 
-The relationship in this directory is strictly unidirectional: the entry point initiates the composition process, and the configuration file supports the data layer resolved through that process.
+The dependency flow is strictly unidirectional: `Program.cs` initiates the process, consumes configuration from `App.config`, and drives the shared `UserManagement` view models.
 
-`Program.cs` relies on `Common` and `UserManagement` assemblies (external to this directory but loaded via the composition container) to perform its work. It uses `CompositionHelper.CreateCompositionContainer` to build a catalog from the output directory. Once the container is ready, it resolves `IUserViewModel`. This resolution triggers the MEF composition of the entire user management graph, including `AddUserViewModel` and `ShowUsersViewModel`.
-
-During the execution of these view models, the `BusinessLayer` (specifically `ModelContext`) reads the `ConnectionString` defined in `App.config`. Thus, `App.config` is a passive dependency that enables the active logic in `Program.cs` to persist data. There are no internal dependencies *between* files in this directory; `Program.cs` does not reference `App.config` directly, nor does `App.config` reference any code.
+1.  **Initialization**: `Program.Main` calls `CompositionHelper.CreateCompositionContainer` to build the MEF container. This container scans the assembly directory to discover parts.
+2.  **Configuration**: The MEF composition process eventually instantiates `BusinessLayer/ModelContext`, which reads the `ConnectionString` from [App.config](ConsoleApp1/App.md). This connection string is then injected into the NHibernate session factory. Without this configuration, the application fails at runtime when attempting to access the database.
+3.  **Execution**: Once the container is built, `Program.cs` resolves `IUserViewModel`. It then interacts with `AddUserViewModel` (via `SaveUserAsync`) and `ShowUsersViewModel` (via `OnLoadedAsync`). These view models, located in the `UserManagement` project, handle the actual logic of persisting and retrieving users through the `IUserService`.
+4.  **Termination**: The `using` block in `Program.cs` ensures the MEF container is disposed after the work is complete.
 
 ```mermaid
 flowchart TD
-    subgraph ConsoleApp1 Directory
-        P[Program.cs<br/>Main / Composition Root]
-        C[App.config<br/>ConnectionString]
+    subgraph "ConsoleApp1"
+        P[Program.cs]
+        C[App.config]
     end
 
-    subgraph External Dependencies
-        CH[Common CompositionHelper]
-        UM[UserManagement ViewModels]
-        BL[BusinessLayer ModelContext]
+    subgraph "Shared Projects"
+        CH[CompositionHelper]
+        UV[IUserViewModel]
+        AUV[AddUserViewModel]
+        SUV[ShowUsersViewModel]
+        ML[BusinessLayer / ModelContext]
+        DAL[DataAccessLayer / NHibernate]
     end
 
-    P -->|calls| CH
-    P -->|resolves| UM
-    BL -->|reads| C
-    UM -->|uses| BL
+    P -->|Builds Container| CH
+    CH -->|Resolves| UV
+    UV -->|Contains| AUV
+    UV -->|Contains| SUV
+    P -->|Drives| AUV
+    P -->|Drives| SUV
+    
+    C -->|Provides ConnectionString| ML
+    ML -->|Initializes| DAL
+    AUV -->|Uses| DAL
+    SUV -->|Uses| DAL
 ```
 
 ### Rough edges
 
-*   The `App.config` connection string is hard-coded to `localhost` and `Integrated Security`, which fails silently or throws obscure errors if the local SQL Server instance is not running or the current user lacks permissions.
-*   `Program.cs` contains a redundant null check (`if (userViewModel == null)`) that is unreachable because `SingleOrDefault()` already throws an exception if no matches are found.
+*   The call to `CreateCompositionContainer(["ConsoleApp1.exe"])` in [Program.cs](ConsoleApp1/Program.md) passes the executable name as an *ignore* list. Since the console app is the entry assembly, it is loaded regardless, making this parameter effectively redundant and potentially confusing to future readers who might expect it to define the primary module.
+*   The test data generation in [Program.cs](ConsoleApp1/Program.md) creates 100 users with identical names ("Firstname Lastname"). This makes it impossible to verify per-iteration state changes in the output, limiting the utility of the console run as a detailed integration test.
 
 ## Contents
 - [App.config](ConsoleApp1/App.md)

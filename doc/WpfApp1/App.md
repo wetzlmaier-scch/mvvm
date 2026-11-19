@@ -1,27 +1,30 @@
+# `WpfApp1/App.config`
+
 ### Purpose
 
-`App.config` is the runtime configuration file for the `WpfApp1` project. It holds a single `appSettings` entry, `ConnectionString`, pointing at a local SQL Server instance: `Server=localhost;Database=Users;Integrated Security=True;TrustServerCertificate=True;`. At build time it is transformed into `WpfApp1.exe.config`, which the .NET configuration system reads at startup via `ConfigurationManager.AppSettings`.
+Runtime configuration for the `WpfApp1` executable. It holds a single `appSettings` entry, `ConnectionString`, pointing at a local SQL Server instance: `Server=localhost;Database=Users;Integrated Security=True;TrustServerCertificate=True`. That is the entire file — no other sections, no connectionStrings block, no binding redirects.
+
+It exists so the WPF app has a database connection string to load at startup. Nothing in the WPF project itself reads it; the consuming code lives in the shared business layer.
 
 ### Role in the Codebase
 
-It is the only place this project supplies a database connection string. The WPF application itself (`App.xaml`, `App.xaml.cs`, the `View/` and `Controller/` directories) does not read the config directly; it reaches the value indirectly through the shared `BusinessLayer` project. Removing this file (or the key) means `ConfigurationManager.AppSettings["ConnectionString"]` returns `null`, and — because the consumer uses the null-forgiving operator — the failure surfaces later, when NHibernate actually tries to open a connection, rather than at startup with a clear error.
+The WPF project contains `App.xaml`/`App.xaml.cs` (startup), `View/`, `Controller/`, and this file. It is the only place this project supplies a database connection. At build time the .NET SDK copies it to `WpfApp1.exe.config`, and `System.Configuration` makes it visible to everything running in that process — including the `BusinessLayer` and `DataAccessLayer.Hibernate` assemblies the app references.
+
+If it were removed (or the key renamed), startup would still succeed, but the first NHibernate operation would fail: `ModelContext` reads the setting with a null-forgiving operator, so the `null` surfaces later as a `NullReferenceException` rather than a clear configuration error.
 
 ### Relationships
 
-The one consumer of this value is `BusinessLayer/ModelContext.cs`:
-
-```csharp
-public class ModelContext()
-    : ModelContextBase(ConfigurationManager.AppSettings["ConnectionString"]!, ["Entity.Hibernate"]);
-```
-
-`ModelContext` exports an `IModelContext` via MEF. It stores the string as the read-only `ConnectionString` property of `ModelContextBase` (in `DataAccessLayer.Hibernate/ModelContextBase.cs`). From there `BusinessLayer/RepositoryFactory.cs` forwards `context.ConnectionString` to the NHibernate factory, which builds the session factory with a SQL Server 2012 provider (`MsSql2012` / Microsoft Data SQL Client driver). So the chain is: `App.config` → `ModelContext` → `ModelContextBase.ConnectionString` → `RepositoryFactory` → NHibernate session factory.
-
-The same connection string value is duplicated in the sibling projects' config files (`ConsoleApp1/App.config`, `WinFormsApp1/App.config`), which serve the other entry points that reference the same `BusinessLayer`.
+- **Producer of the setting:** this file.
+- **Direct consumer:** `BusinessLayer/ModelContext.cs` — its primary constructor argument is `ConfigurationManager.AppSettings["ConnectionString"]!`, passed to `ModelContextBase` (in `DataAccessLayer.Hibernate/ModelContextBase.cs`), which stores it as the read-only `ConnectionString` property.
+- **Downstream flow:** `ModelContext` is MEF-exported as `IModelContext`; `BusinessLayer/RepositoryFactory.cs` imports it and forwards `context.ConnectionString` into the NHibernate `SessionFactoryBuilder`. The WPF app's view models reach this chain without ever touching `App.config` directly.
+- **Sibling copies:** `ConsoleApp1/App.config` and `WinFormsApp1/App.config` hold the same entry, since each host executable needs its own `.exe.config`. Changes here must be replicated there if the other hosts should point at the same database.
 
 ### Behavior & Details
 
-- The key name is exactly `ConnectionString`; code looks it up by that literal string, so renaming the key breaks the lookup silently.
-- `Integrated Security=True` means Windows authentication — no credentials are (or can be) in the string, and the app runs under whatever Windows identity the process has.
-- `TrustServerCertificate=True` skips TLS certificate validation, which is a local-development convenience; it would be a problem in any deployment against a production server.
-- There is no fallback or default value anywhere in the code; the `!` in `ModelContext` asserts non-null without checking.
+- The key name is exactly `ConnectionString`. Code looks it up by that literal string, so renaming the key breaks the lookup with no compile-time warning.
+- `Integrated Security=True` means Windows authentication; no credentials are stored in the file.
+- `TrustServerCertificate=True` suppresses SQL Server certificate validation — appropriate for a `localhost` dev database, but not something to copy into a production connection string.
+
+### Rough edges
+
+- The file is a development-only default hardcoded to `localhost`. Every host in the repo ships the identical value, so the database location can only change by editing the config file and rebuilding — there is no environment-based override.

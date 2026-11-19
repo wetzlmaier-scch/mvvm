@@ -1,45 +1,45 @@
-# `Common/Windows/Media/Imaging/BitmapSourceHelper.cs`
-
 ### Purpose
 
-`BitmapSourceHelper` is a small static utility class that converts images between GDI+ (`System.Drawing.Image` / `Bitmap`) and WPF's `BitmapSource` type system, and loads images from file streams. It exists because WPF UI elements bind to `BitmapSource`, while Win32/GDI+ APIs (window icon extraction, file dialogs, interop with unmanaged code) produce `Bitmap` objects — this class is the bridge between the two.
+`Common/Windows/Media/Imaging/BitmapSourceHelper.cs`
+
+`BitmapSourceHelper` is a static utility class that converts images between two different .NET imaging systems — GDI+ (`System.Drawing.Image` / `Bitmap`) and WPF's `BitmapSource` — and loads images from a file path. It exists because GDI+ and WPF each have their own bitmap types, and you cannot assign a `System.Drawing.Bitmap` directly to a WPF property (such as `Window.Icon`) without an intermediate conversion step.
+
+The class is stateless: every method is `static` and holds no fields. It is a leaf component in the `Common` project with no dependencies on other custom code.
 
 ### Role in the Codebase
 
-This file is the only source file in the `Common/Windows/Media/Imaging` directory. It is a leaf-level helper with no dependencies on other custom code in the repository — it relies solely on BCL and WPF imaging APIs. The class is stateless and thread-safe in the trivial sense (no mutable static state).
+The class sits in `Common/Windows/Media/Imaging/` as the sole file in that directory. Its job is to be the single place that knows how to cross the GDI+/WPF imaging boundary, so that callers in the application don't have to deal with `CreateBitmapSourceFromHBitmap`, encoder frames, or stream bookkeeping themselves.
 
-The only caller in the repository is `Mvvm/MainViewModelBase`, which uses `LoadBitmap(Bitmap)` in its constructor to convert the application's executable icon (obtained via `AssemblyHelper.LoadApplicationIcon()`) into a `BitmapSource` and assign it to the window's `Icon` property. If this class were removed, that icon-loading path would need to be rewritten inline.
+Its only caller in this repository is `Mvvm/MainViewModelBase`, which calls `BitmapSourceHelper.LoadBitmap(icon.ToBitmap())` in its constructor to convert the application icon (loaded from the assembly's manifest resources via `AssemblyHelper`) into a `BitmapSource` suitable for `Window.Icon`. Removing the class would break that icon-loading path and any future code that needs to convert GDI+ images for WPF display.
 
 ### Relationships
 
-- **`System.Drawing`** — provides `Image` and `Bitmap` (GDI+ types).
-- **`System.Windows.Interop.Imaging`** — provides `CreateBitmapSourceFromHBitmap`, the API that converts a GDI handle into a WPF `BitmapSource`.
-- **`System.Windows.Media.Imaging`** — provides `BitmapSource`, `BitmapImage`, `BitmapFrame`, and `BmpBitmapEncoder` (WPF imaging types).
-- **Caller**: `Mvvm/MainViewModelBase` (via `using Common.Windows.Media.Imaging`).
+**No internal dependencies.** The class does not reference any other custom code in the repository. All its dependencies are framework types:
+
+- `System.Drawing` — `Image`, `Bitmap`, `GetHbitmap()`
+- `System.Windows.Interop` — `Imaging.CreateBitmapSourceFromHBitmap`
+- `System.Windows.Media.Imaging` — `BitmapSource`, `BitmapImage`, `BitmapEncoder`, `BmpBitmapEncoder`, `BitmapFrame`
+- `System.IO` — `MemoryStream`, `File.OpenRead`
+
+**Caller:** `Mvvm/MainViewModelBase` (specifically its constructor) calls `LoadBitmap(Bitmap)` to produce the window icon.
 
 ### Behavior & Details
 
-The class exposes five methods, all `public static`:
-
 **`LoadImage(Image? source)`**
-Null-pass-through. If `source` is null, returns null. Otherwise wraps the `Image` in a new `Bitmap` (GDI+ requires this to call `GetHbitmap`) and delegates to `LoadBitmap(Bitmap)`.
+Null-passthrough: returns `null` if the argument is `null`. Otherwise wraps the `Image` in a `new Bitmap(source)` and delegates to `LoadBitmap(Bitmap)`. The new `Bitmap` is the managed handle around the image data; it is not explicitly disposed here, so the caller retains ownership.
 
 **`LoadBitmap(Bitmap? source)`**
-Null-pass-through. If non-null, calls `source.GetHbitmap()` to obtain a GDI handle, then passes it to `Imaging.CreateBitmapSourceFromHBitmap` to produce a WPF `BitmapSource`. The `Int32Rect.Empty` argument means "use the full bitmap," and `FromEmptyOptions()` means "default pixel format and color context."
+The core GDI+ → WPF conversion. Uses `source.GetHbitmap()` to obtain a native GDI handle, then calls `System.Windows.Interop.Imaging.CreateBitmapSourceFromHBitmap` to produce a WPF `BitmapSource` that references that handle. Note: the HBITMAP is a native resource. `CreateBitmapSourceFromHBitmap` does not take ownership of it in the sense of freeing it when the `BitmapSource` is garbage-collected, so the GDI handle leaks for the lifetime of the process. For small, infrequent calls (like loading one application icon at startup) this is bounded and harmless, but repeated calls in a loop would accumulate native GDI objects.
 
 **`SaveBitmap(BitmapSource? source)`**
-The reverse direction. Null-pass-through. Encodes the `BitmapSource` as a BMP into a `MemoryStream` via `BmpBitmapEncoder`, then reads that stream back into a GDI+ `Bitmap`. Returns a new `Bitmap` wrapping the decoded one.
+The reverse direction: WPF → GDI+. Encodes the `BitmapSource` into a BMP byte sequence via `BmpBitmapEncoder` in a `MemoryStream`, then constructs a `System.Drawing.Bitmap` from that stream. The extra `new Bitmap(bitmap)` copy is a shallow clone that detaches the bitmap from the stream, since the `Bitmap(Stream)` constructor keeps the stream alive. The result is a self-contained `Bitmap`.
 
 **`LoadBitmap(string filename)`**
-Opens the file for reading and delegates to the `Stream` overload. Note: this overload returns a non-nullable `BitmapSource` and will throw (`FileNotFoundException`, etc.) if the file is missing or unreadable — it does not do null-checks the way the `Bitmap` overloads do.
+Convenience overload for loading a WPF image directly from disk. Opens the file, delegates to the stream overload, and returns the resulting `BitmapImage`. The `File.OpenRead` stream is disposed by the `using` statement after the `BitmapImage` is constructed. Because `CacheOption.OnLoad` is set (see below), the image data is fully read into memory before the stream closes, so this is safe.
 
 **`LoadBitmap(Stream stream)`**
-Creates a `BitmapImage`, sets `CacheOption` to `OnLoad` (so the entire image is decoded into memory immediately and the stream can be closed), assigns the stream, and calls `BeginInit`/`EndInit` to trigger the decode. Returns the loaded `BitmapImage` (which is a `BitmapSource`).
+The underlying WPF image decoder. Creates a `BitmapImage`, calls `BeginInit`/`EndInit`, and sets `CacheOption = BitmapCacheOption.OnLoad` so the pixel data is decoded eagerly from the stream rather than lazily on first render. The caller is responsible for keeping the stream open only long enough for `EndInit`; with `OnLoad` the data is fully consumed by that point.
 
 ### Rough Edges
 
-`LoadBitmap(Bitmap)` calls `GetHbitmap()` but never calls `DeleteObject` on the resulting HBITMAP. Each call therefore leaks one native GDI handle for the lifetime of the process. In the current codebase this path is hit once at startup for the window icon, so the leak is bounded — but any future caller that invokes this method repeatedly (e.g. in a loop or per user action) would accumulate handles until the process runs out of GDI objects.
-
-`SaveBitmap` allocates a full in-memory BMP round-trip and returns `new Bitmap(bitmap)` — an unnecessary copy of the `Bitmap` just constructed from the stream. The extra allocation is harmless but the returned `Bitmap` is a GDI+ object the caller must dispose.
-
-`LoadBitmap(string filename)` declares a non-nullable return type, so a missing file surfaces as an exception rather than a null — inconsistent with the other `LoadBitmap` overloads that return null on null input.
+- `LoadBitmap(Bitmap)` calls `GetHbitmap()` without a corresponding `DeleteObject`. Each call leaks one native GDI handle until process exit. This is acceptable for the single icon-load at startup but would be a problem if the method were used repeatedly.

@@ -1,28 +1,28 @@
 ### Purpose
 
-`DataAccessLayer/IEntity.cs` defines `IEntity<TKey>`, the marker contract for anything the data access layer treats as a persistable entity: a reference type exposing a read-only `Id` whose type is a struct. It exists so the generic repository types can be written once against a single constraint — `TEntity : class, IEntity<TKey>` — instead of naming concrete entity classes.
+`DataAccessLayer/IEntity.cs` defines `IEntity<TKey>`, the marker contract for anything the data access layer treats as a persistable entity: a reference type exposing a read-only `Id` whose type is a value type. It exists so that the repository abstractions (`IRepository<TKey>`, `IHibernateRepository<TKey>`) can constrain their generic entity parameters to "has an identity" without depending on any concrete base class.
 
 ### Role in the Codebase
 
-It is the foundational contract of the `DataAccessLayer` project, which is otherwise a small set of persistence abstractions (`IRepository`, `IRepositoryFactory`, `IUnitOfWork`, `Entity<TKey>`). The abstract base class `Entity<TKey>` in `DataAccessLayer/Entity.cs` implements this interface, and concrete domain models (for example `User` in `Entity.Hibernate`) inherit from `Entity<TKey>`. Every method in `IRepository<TKey>` (`DataAccessLayer/IRepository.cs`) and `IHibernateRepository` constrains `TEntity` to `class, IEntity<TKey>`, so a type that does not implement this interface simply cannot be passed to the repository. Removing it would break compilation across the data access layer, its Hibernate implementation, and the domain models.
+`DataAccessLayer` is a small contracts-only project — persistence interfaces (`IRepository.cs`, `IRepositoryFactory.cs`, `IUnitOfWork.cs`), the entity marker interface, the shared `DataAccessException`, and the `Entity<TKey>` base class. `IEntity<TKey>` is the linchpin of that project: every repository query method constrains its `TEntity` to `class, IEntity<TKey>`, which is what lets one repository handle all entity types in the system. If it were removed, those constraints would have to point at something else (for example the `Entity<TKey>` base class directly), coupling the contracts to that implementation detail.
 
 ### Relationships
 
-- **Implementer:** `Entity<TKey>` (`DataAccessLayer/Entity.cs`) — the abstract base class that provides the `Id` property, so concrete models like `User` (in `Entity.Hibernate`) get the implementation for free by extending it.
-- **Consumers:** `IRepository<TKey>` (`DataAccessLayer/IRepository.cs`) — all seven of its query methods constrain `TEntity : class, IEntity<TKey>`. The NHibernate implementation `DataAccessLayer.Hibernate/HibernateRepository.cs` repeats the same constraint on its `Get`, `GetQueryable`, `Find`, `Save`, and similar methods. The constraint is applied to the type, not the interface, so nothing here is inherited — `IEntity<TKey>` is purely a compile-time gate.
-- **No imports:** the interface itself depends only on `System` (for the `struct` constraint). It pulls in no other code.
+- **`Entity<TKey>`** (`DataAccessLayer/Entity.cs`) — the abstract base class that implements this interface. It provides a `virtual` `Id` property with a protected setter, initialized to `default!` in the constructor. Concrete entities derive from it, e.g. `User : Entity<int>` in `Entity.Hibernate/User.cs`.
+- **`IRepository<TKey>`** (`DataAccessLayer/IRepository.cs`) — all seven query methods (`GetQueryable`, `Single`, `SingleOrDefault`, `Find`, `FindOne`, `GetAll`, ...) carry the constraint `where TEntity : class, IEntity<TKey>`.
+- **`HibernateRepository<TKey>`** and **`IHibernateRepository<TKey>`** (`DataAccessLayer.Hibernate/`) — the NHibernate-backed implementation, which repeats the same constraint on every method, including `Save<TEntity>`.
+
+The `out TKey` variance marker makes the interface covariant, so `IEntity<int>` is usable wherever `IEntity<System.ValueTypes>`-style broader key types are not needed — in practice it means a reference to an entity with a narrower key can flow through APIs typed on a broader one. Callers of the repository never touch this interface directly; they get it implicitly by their entity classes.
 
 ### Behavior & Details
 
-The interface has exactly one member: `TKey Id { get; }`, constrained to `TKey : struct` so keys must be value types (e.g. `int`, `Guid`), never `null`.
+The interface has a single member:
 
-Two declarations do real work:
+- `TKey Id { get; }` — get-only, so identity is exposed read-only through the contract. The `where TKey : struct` constraint restricts key types to value types (`int`, `Guid`, ...), mirroring the constraint on `Entity<TKey>`.
 
-- **Read-only `Id`.** There is no setter, so code outside the entity class cannot reassign identity — it is assigned by the data layer on save or populated from the database on load, not by business code.
-- **`out TKey` variance.** The type parameter is covariant, which permits `Entity<TKey>` to implement the interface even though its `Id` is `virtual` with a `protected set` (the setter is hidden from the public surface and is not part of the interface contract). In practice `Id` flows out of the entity (read for comparison, persistence bookkeeping) and never back in.
-
-A type is an entity under this contract if and only if it exposes a public, get-only `TKey Id` with a struct key. That is the entire thing the persistence layer requires of it.
+There is no logic, no events, no other members — it is purely a shape declaration. The only behavioural consequence lives in its consumer `Entity<TKey>`: because `Id` there is `virtual` with a protected setter, a derived class cannot widen the setter through the interface (the interface allows no setter), but it *can* override the property with a public setter, which compiles and bypasses the "identity is not assignable through the contract" intent.
 
 ### Rough edges
 
-`IEntity<TKey>` declares only a getter, but the `virtual` `Id` on `Entity<TKey>` could still be overridden in a derived class with a public setter — that would compile even though the interface never promised one, quietly weakening the "identity is read-only" expectation the interface advertises.
+- The interface declares `Id` read-only, but `Entity<TKey>.Id` is `virtual`, so a derived class could override it with a public setter and silently break the read-only identity guarantee the interface expresses.
+- `Entity<TKey>`'s constructor sets `Id = default!`, meaning an unsaved entity has a "valid" default key (e.g. `0` for `int`) rather than a null-like marker — callers checking `Id == default(TKey)` to detect unsaved entities can only work because every entity derives from `Entity<TKey>`, not because the interface guarantees it.

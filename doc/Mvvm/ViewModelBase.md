@@ -2,47 +2,48 @@
 
 ### Purpose
 
-This file defines `ViewModelBase`, the abstract root of the application's view model hierarchy in the `Mvvm` namespace. It exists to give every view model three shared capabilities: WPF data-binding change notification (inherited from `ObservableObject`), a static `IsInDesignMode` flag so logic can be skipped while the app runs inside the Visual Studio designer, and a parent/child view model registration mechanism with paired `OnClosing`/`OnClosed` hooks that propagate through the hierarchy.
+`ViewModelBase` is the common base class for the application's MVVM layer. It exists to give every ViewModel, from WPF, three things they would otherwise each reimplement: property-change notification, a design-time detection flag, and a parent/child lifecycle so that closing a container view model propagates through the view models it owns.
 
-It implements `IViewModel` (defined in `Mvvm/IViewModel.cs`, which is simply `INotifyPropertyChanged` with no additional members), so any `ViewModelBase` is usable where the interface is expected.
+It is abstract, so it is always a starting point for derived view models rather than something instantiated directly.
 
 ### Role in the Codebase
 
-`ViewModelBase` is the foundational base class of the `Mvvm` layer. Three abstract classes build directly on it:
+Within the `Mvvm/` folder, it is the root of the view model hierarchy. The other base classes build on it: `DisposableViewModelBase` adds `IDisposable` semantics and a `Disposables` collection; `MainViewModelBase` adds main-window concerns (`Shutdown`, `CloseWindow`, `Icon`) and hooks into the `OnClosing()`/`OnClosed()` pair defined here; `ValidatableViewModelBase<T>` adds FluentValidation-based error reporting. A concrete example is `ShowUsersViewModel` in `UserManagement/ViewModel/ShowUsersViewModel.cs`, which derives from it directly.
 
-- `DisposableViewModelBase` — adds `IDisposable` semantics (a `Disposables` collection, `CheckIfDisposed`, `Disposed` event).
-- `MainViewModelBase` — represents the view model of the main window and is the place that actually wires the child lifecycle into the window: it subscribes to `MainWindow.Closing` in its constructor and, in its `OnClosing(CancelEventArgs)` handler, calls the no-argument `OnClosing()` to ask the child tree whether the window may close (`e.Cancel = true` if any child says no), then calls `OnClosed()`.
-- `ValidatableViewModelBase<T>` — adds validation via `INotifyDataErrorInfo`.
-
-Concrete view models such as `ShowUsersViewModel` also derive directly from `ViewModelBase`. Removing this class would break the entire `Mvvm` layer, since everything above in the hierarchy inherits from it.
+`MainViewModelBase.OnClosing(CancelEventArgs)` is the primary consumer of the lifecycle contract: if `OnClosing()` returns `false`, it cancels the window close, which means any registered child that returns `false` blocks the whole application from closing. Removing this class would break every ViewModel in the project.
 
 ### Relationships
 
-- **`CommunityToolkit.Mvvm.ObservableObject`** (external library): the base class; supplies `INotifyPropertyChanged` and the `SetProperty`/`[ObservableProperty]` machinery that concrete view models use. `ViewModelBase` inherits it but adds no properties of its own.
-- **`CommunityToolkit.Diagnostics.Guard`** (external library): `RegisterChildViewModel`/`UnregisterChildViewModel` use `Guard.IsNotNull`.
-- **`Common.Diagnostics.ExtendedGuard`** (`Common/Diagnostics/ExtendedGuard.cs`): project-local guard helpers. `ExtendedGuard.NotContains` rejects registering a child that is already registered; `ExtendedGuard.Contains` rejects unregistering one that is not. Both throw `ArgumentException` on failure. Note these helpers format the message with `'{name}'` but never interpolate the actual argument name, so the name passed in is not included in the message.
-- **`System.Windows`** (`DesignerProperties`, `DependencyPropertyDescriptor`, `FrameworkElement`): used by `IsInDesignModeStatic` to read the designer-mode property at runtime.
-- **Downstream callers:** `MainViewModelBase` is the only place that invokes `OnClosing()`/`OnClosed()`, so the child-tree propagation only runs when a `MainViewModelBase` is present in the hierarchy.
+- Inherits from `ObservableObject` (CommunityToolkit.Mvvm), which supplies `INotifyPropertyChanged` and the `SetProperty`/`OnPropertyChanged` helpers. This class contributes no property logic of its own; `ObservableObject` provides all of it.
+- Implements `IViewModel` (defined in `Mvvm/IViewModel.cs`), which is an empty marker interface extending `INotifyPropertyChanged`.
+- Depends on `ExtendedGuard` in `Common/Diagnostics/ExtendedGuard.cs` for the register/unregister preconditions.
+- Callers of the protected members are the derived classes above and any view model that manages child view models.
 
 ### Behavior & Details
 
-**`IsInDesignModeStatic`** — A lazily initialized static flag. On first read it reads the default value of WPF's `DesignerProperties.IsInDesignModeProperty` via `DependencyPropertyDescriptor`. Since that property can report `false` in some designer scenarios, it also checks whether the current process name starts with `devenv` (the Visual Studio host process) and forces `true` in that case. The result is cached in `_isInDesignMode` for the lifetime of the process; the instance property `IsInDesignMode` is just a convenience pass-through to the static.
+**Design-mode detection**
+
+`IsInDesignMode` is an instance property that simply forwards to the static `IsInDesignModeStatic`. The static value is computed once and cached in `_isInDesignMode`. The first read does two checks:
+
+1. It reads `DesignerProperties.IsInDesignModeProperty` via `DependencyPropertyDescriptor` for `FrameworkElement`.
+2. If that reports false, it additionally checks whether the process name starts with `"devenv"` — to catch cases where the designer is running under a Visual Studio developer instance that does not set the WPF design-mode flag.
+
+Because the cache is `bool?`, the check runs exactly once per process; every subsequent property access, on any instance, returns the cached value. Derived classes such as `MainViewModelBase` early-return out of their constructors when `IsInDesignMode` is true, so a lot of the codebase's behaviour implicitly depends on this detection being correct.
 
 **Child view model registration**
 
-- `RegisterChildViewModel(viewModel)` adds a child to `_childViewModels`. Guards: non-null and not already registered (duplicates throw `ArgumentException`).
-- `UnregisterChildViewModel(viewModel)` removes a child. Guards: non-null and currently registered (unregistering an unknown child throws).
+`RegisterChildViewModel` and `UnregisterChildViewModel` maintain the `_childViewModels` list and are the only way to add or remove a child. Both guard against the null case (`Guard.IsNotNull`) and against duplicates: registering a child that is already registered, or unregistering one that is not registered, throws `ArgumentException` via `ExtendedGuard.NotContains` / `ExtendedGuard.Contains`.
 
-**`OnClosing()` / `OnClosed()`** — Both are `protected virtual` and are *not* invoked by `ViewModelBase` itself:
+**Close lifecycle**
 
-- `OnClosing()` aggregates the answers of all children: it returns `true` only if every child's `OnClosing()` returns `true` (`Aggregate(true, ... & ...)`). The default implementation therefore returns `true` (no children → closable). A subclass overrides this to veto closing.
-- `OnClosed()` is a notification that the view model has been closed; the default implementation recursively calls `OnClosed()` on each child. A subclass overrides it for cleanup.
+`OnClosing` and `OnClosed` are the two halves of the tear-down sequence, both virtual:
 
-The propagation is depth-first and happens in the order children were registered.
+- `OnClosing` is asked before close, returning a `bool` — it walks `_childViewModels` with an aggregate using `&` (not `&&`), so every child's `OnClosing()` is consulted even after one returns `false`. The result is `false` if any child refused to close.
+- `OnClosed` is called after close and walks the same list recursively, so a grandchild's `OnClosed` runs before its parent's completes, and every level of the tree is visited.
 
-**Non-obvious control flow:** the child hooks only fire because `MainViewModelBase`'s constructor subscribes to `MainWindow.Closing` and translates it into `OnClosing()` → (if allowed) `OnClosed()`. For view models under a plain `ViewModelBase` (e.g. `ShowUsersViewModel`) that are not in the `MainViewModelBase` subtree, nothing calls these methods unless a concrete class does so explicitly.
+Note that nothing in this class calls these two methods. They are invoked from `MainViewModelBase`, which wires `Application.Current.MainWindow.Closing` to its own `OnClosing(CancelEventArgs)` handler that delegates to the parameterless pair. A plain `ViewModelBase` subclass that is not in the main-window chain gets no lifecycle callbacks at all.
 
 ### Rough edges
 
-- `ExtendedGuard.Contains`/`NotContains` take a `name` parameter that is never used in the exception message, so the `ArgumentException`s thrown by the register/unregister guards do not identify which argument failed.
-- The `devenv` process-name check only catches the Visual Studio process; other host processes that run the app in a design-like state (e.g. Blazor/XAML tooling, tests launched from a VS host) would still see `IsInDesignModeStatic` as `false`.
+- `OnClosing`'s use of `&` in the aggregate means a child's `OnClosing()` can be called while the parent's close is already going to be cancelled; if a child's `OnClosing` has side effects, it must be safe to run in that situation.
+- `_childViewModels` is an `IList<ViewModelBase>` backed by `List<T>`; iteration during `OnClosed`/`OnClosing` is not protected against a child that unregisters another child mid-traversal.

@@ -1,75 +1,60 @@
 ### Purpose
 
-`DataAccessLayer.Hibernate` is the NHibernate-specific implementation of the repository pattern for this codebase. It provides the concrete classes that query a SQL Server database, persist entities via stateless sessions, and manage transaction scopes, while exposing these capabilities through a set of interfaces that hide NHibernate details from the business layer.
-
-The contents belong together because they form a complete ORM bridge: configuration interfaces (`IModelContext`), factory logic to bootstrap the NHibernate session factory, and the repository/unit-of-work classes that perform the actual data access. This directory acts as the adapter between the abstract `DataAccessLayer` contracts and the NHibernate library.
+`DataAccessLayer.Hibernate` is the NHibernate implementation layer of the data access stack. It provides concrete classes and NHibernate-specific interfaces that allow the business layer to perform reads, inserts, and transaction management without directly referencing NHibernate types. The directory serves as a bridge, translating abstract repository and unit-of-work contracts from the `DataAccessLayer` project into concrete NHibernate operations using stateless sessions and Fluent NHibernate configurations.
 
 ### Software Components
 
-The components in this directory fall into three functional groups:
+The directory consists of three main functional groups: repository management, transaction control, and configuration bootstrapping.
 
-*   **Configuration & Bootstrapping:** These components handle the one-time setup of the NHibernate environment.
-    *   [`IModelContext`](DataAccessLayer.Hibernate/IModelContext.md) and [`ModelContextBase`](DataAccessLayer.Hibernate/ModelContextBase.md) define and implement the contract for providing the connection string and mapping assembly names.
-    *   [`HibernateRepositoryFactory`](DataAccessLayer.Hibernate/HibernateRepositoryFactory.md) is the active bootstrap point. It reads the configuration, builds the `ISessionFactory`, and mints repository instances.
-    *   [`SessionFactoryBuilder`](DataAccessLayer.Hibernate/SessionFactoryBuilder.md) contains parallel, unused logic for building the session factory. It is currently dead code, as its `BuildSessionFactory` method is not called by any other component in the repository.
+The **repository management** group centers on [HibernateRepository.cs](DataAccessLayer.Hibernate/HibernateRepository.md), which implements `IHibernateRepository<TKey>` and uses a stateless session for queries and insert-only operations. [HibernateRepositoryFactory.cs](DataAccessLayer.Hibernate/HibernateRepositoryFactory.md) builds the `ISessionFactory` and creates repository instances. The interfaces [IHibernateRepository.cs](DataAccessLayer.Hibernate/IHibernateRepository.md) and [IHibernateRepositoryFactory.cs](DataAccessLayer.Hibernate/IHibernateRepositoryFactory.md) define the contracts, ensuring the business layer depends on abstractions rather than concrete NHibernate classes.
 
-*   **Data Access Implementation:** These are the workhorses that interact with the database.
-    *   [`HibernateRepository`](DataAccessLayer.Hibernate/HibernateRepository.md) is the concrete implementation of the repository pattern. It wraps an `IStatelessSession` to provide LINQ query capabilities and an `Insert`-only save method.
-    *   [`HibernateUnitOfWork`](DataAccessLayer.Hibernate/HibernateUnitOfWork.md) manages the transaction lifecycle (begin, commit, rollback) for a specific session. It is instantiated lazily by `HibernateRepository` when a transaction is needed.
+The **transaction control** group includes [HibernateUnitOfWork.cs](DataAccessLayer.Hibernate/HibernateUnitOfWork.md), which wraps session transactions to provide atomic commit and rollback capabilities. [IHibernateUnitOfWork.cs](DataAccessLayer.Hibernate/IHibernateUnitOfWork.md) extends the base unit of work contract to allow specifying isolation levels.
 
-*   **Abstraction Contracts:** These interfaces allow the business layer to depend on the data layer without referencing NHibernate types directly.
-    *   [`IHibernateRepository`](DataAccessLayer.Hibernate/IHibernateRepository.md) extends the base `IRepository` to add save and unit-of-work capabilities.
-    *   [`IHibernateRepositoryFactory`](DataAccessLayer.Hibernate/IHibernateRepositoryFactory.md) defines the contract for creating `IHibernateRepository` instances.
-    *   [`IHibernateUnitOfWork`](DataAccessLayer.Hibernate/IHibernateUnitOfWork.md) extends the base `IUnitOfWork` to allow specifying transaction isolation levels.
+The **configuration bootstrapping** group contains [IModelContext.cs](DataAccessLayer.Hibernate/IModelContext.md) and [ModelContextBase.cs](DataAccessLayer.Hibernate/ModelContextBase.md). These abstract the supply of the connection string and mapping assemblies required to initialize NHibernate. Additionally, [SessionFactoryBuilder.cs](DataAccessLayer.Hibernate/SessionFactoryBuilder.md) contains a static helper for building the session factory, though it currently duplicates logic already present in the repository factory.
 
 ### Relationships
 
-The primary flow of dependency starts at the configuration seam. The business layer provides an `IModelContext` implementation to [`HibernateRepositoryFactory`](DataAccessLayer.Hibernate/HibernateRepositoryFactory.md), which uses those values to initialize the NHibernate `ISessionFactory`. Once initialized, the factory’s `Create` method generates new [`HibernateRepository`](DataAccessLayer.Hibernate/HibernateRepository.md) instances.
+The dependency flow is strictly downward: the business layer depends on the interfaces defined here, and the concrete classes in this directory depend on NHibernate.
 
-Each `HibernateRepository` owns a stateless session. If a transaction is required, the repository lazily creates a [`HibernateUnitOfWork`](DataAccessLayer.Hibernate/HibernateUnitOfWork.md) bound to that same session. The `UnitOfWork` handles the transaction state, while the `Repository` handles the query and insert commands.
+`HibernateRepositoryFactory<TKey>` is the entry point for configuration. It receives a connection string and mapping assemblies (typically via `IModelContext`), builds the `ISessionFactory`, and creates `HibernateRepository<TKey>` instances. Each repository instance owns a stateless session. When a caller requires transactional behavior, the repository lazily instantiates a `HibernateUnitOfWork` that shares that same session.
 
-[`SessionFactoryBuilder`](DataAccessLayer.Hibernate/SessionFactoryBuilder.md) is isolated from this active flow. Although it shares the same inputs (`connectionString`, `mappingAssemblies`) as the factory, no other component calls it. The logic to build the session factory is duplicated between `SessionFactoryBuilder` and `HibernateRepositoryFactory`, but only the factory’s version is executed in the running application.
+`SessionFactoryBuilder` is a parallel path that performs the same configuration steps as `HibernateRepositoryFactory` but is currently not part of the active wiring. This creates a maintenance risk where configuration changes must be applied in two places.
 
 ```mermaid
 flowchart TD
     subgraph "Configuration"
         IModelContext[IModelContext]
         ModelContextBase[ModelContextBase]
-    end
-
-    subgraph "Bootstrapping"
-        HibernateRepositoryFactory[HibernateRepositoryFactory]
         SessionFactoryBuilder[SessionFactoryBuilder]
     end
 
-    subgraph "Data Access"
+    subgraph "Repository Management"
+        IHibernateRepositoryFactory[IHibernateRepositoryFactory]
+        HibernateRepositoryFactory[HibernateRepositoryFactory]
+        IHibernateRepository[IHibernateRepository]
         HibernateRepository[HibernateRepository]
+    end
+
+    subgraph "Transaction Control"
+        IHibernateUnitOfWork[IHibernateUnitOfWork]
         HibernateUnitOfWork[HibernateUnitOfWork]
     end
 
-    subgraph "Contracts"
-        IHibernateRepository[IHibernateRepository]
-        IHibernateRepositoryFactory[IHibernateRepositoryFactory]
-        IHibernateUnitOfWork[IHibernateUnitOfWork]
-    end
-
-    ModelContextBase --|implements| IModelContext
-    HibernateRepositoryFactory --|implements| IHibernateRepositoryFactory
-    HibernateRepository --|implements| IHibernateRepository
-    HibernateUnitOfWork --|implements| IHibernateUnitOfWork
-
-    HibernateRepositoryFactory --|creates| HibernateRepository
-    HibernateRepository --|lazily creates| HibernateUnitOfWork
-
-    style SessionFactoryBuilder stroke-dasharray: 5 5
-    style SessionFactoryBuilder color:#f9f9f9
+    IModelContext --> ModelContextBase
+    IModelContext --> HibernateRepositoryFactory
+    HibernateRepositoryFactory -->|Creates| HibernateRepository
+    HibernateRepositoryFactory -->|Implements| IHibernateRepositoryFactory
+    HibernateRepository -->|Implements| IHibernateRepository
+    HibernateRepository -->|Uses| HibernateUnitOfWork
+    HibernateUnitOfWork -->|Implements| IHibernateUnitOfWork
+    HibernateRepositoryFactory -.->|Duplicates logic in| SessionFactoryBuilder
 ```
 
 ### Rough edges
 
-*   **Duplicated Bootstrapping Logic:** The NHibernate configuration logic exists in both [`HibernateRepositoryFactory`](DataAccessLayer.Hibernate/HibernateRepositoryFactory.md) and [`SessionFactoryBuilder`](DataAccessLayer.Hibernate/SessionFactoryBuilder.md). Only the factory is used, but the duplication creates a risk of divergence if one is updated without the other.
-*   **Session Lifecycle Gap:** [`HibernateRepository`](DataAccessLayer.Hibernate/HibernateRepository.md) and [`HibernateUnitOfWork`](DataAccessLayer.Hibernate/HibernateUnitOfWork.md) do not dispose the underlying `IStatelessSession`. Callers must manage the session's lifetime externally, which is not clearly documented in the interface contracts.
-*   **Unimplemented Teardown:** The `Drop` method in [`HibernateRepositoryFactory`](DataAccessLayer.Hibernate/HibernateRepositoryFactory.md) throws `NotImplementedException`, meaning there is no supported way to dispose or reconfigure the session factory once it is built.
+- `SessionFactoryBuilder` duplicates the NHibernate configuration logic found in `HibernateRepositoryFactory`, creating a maintenance hazard where one copy may drift out of sync.
+- `HibernateRepository.Save` is named generically but only performs inserts; there is no support for updates or upserts.
+- `HibernateUnitOfWork` does not roll back or commit a live transaction upon disposal, potentially leaving transactions in an ambiguous state if the unit of work is disposed while a transaction is active.
 
 ## Contents
 - [HibernateRepository.cs](DataAccessLayer.Hibernate/HibernateRepository.md)

@@ -1,50 +1,59 @@
 ### Purpose
 
-`WinFormsApp1` is the WinForms executable host for the user management application. It is responsible for starting the process, resolving application modules via MEF, and managing the WinForms message loop, while delegating actual business logic and UI rendering to its child components. The directory contains the entry point, runtime configuration, and the specific View and Controller implementations that adapt the shared MVVM architecture to the Windows Forms platform.
+`WinFormsApp1` is the WinForms host executable for the user management application. It provides the Windows desktop interface where users view current accounts and add new ones. The directory contains the entry point, the main window, and the module controller that connects the host process to the shared MVVM architecture. These components belong together because they form the specific platform implementation (WinForms) of the application’s UI layer, distinct from the shared business and data layers.
 
 ### Software Components
 
-The source code in this project is organized into three functional areas: the host infrastructure, the module controller, and the user interface.
+The application logic in this project is distributed across three main components:
 
-*   **Host Infrastructure**: Located in `Program.cs`, this component serves as the application's entry point. It initializes the MEF composition container, registers global exception handlers, and discovers `IModuleController` exports. It does not contain business logic but orchestrates the startup sequence by calling `Initialize()` and `Run()` on discovered modules.
-*   **Module Controller**: The `Controller/` subdirectory contains `DefaultModuleController`. This class acts as the bridge between the host and the MVVM layers. It implements `IModuleController`, imports the main view and view model, wires the view model to the view's `DataContext`, and starts the WinForms message loop.
-*   **User Interface**: The `View/` subdirectory contains `UserForm`, the application's primary window. It is split across `UserForm.cs` (hand-written binding logic) and `UserForm.Designer.cs` (auto-generated layout). The form implements `IMainView` and is exported via MEF, allowing the controller to instantiate it without hard-coded references.
+*   **Entry Point:** [Program.cs](WinFormsApp1/Program.md) contains the `Main` method. It initializes the MEF composition container, resolves all `IModuleController` implementations, and manages the application lifecycle (initialization, running, and exit codes).
+*   **Module Controller:** The [Controller/](WinFormsApp1/Controller.md) directory holds `DefaultModuleController`, the sole implementation of `IModuleController`. This class wires the view model to the view and hosts the WinForms message loop. It acts as the bridge between the host process and the MVVM layers.
+*   **Main View:** The [View/](WinFormsApp1/View.md) directory contains `UserForm`, the single main window. This partial class implements `IMainView`, handles data binding for the user list and input fields, and forwards user actions to the view model.
+
+Additionally, [App.config](WinFormsApp1/App.md) provides the SQL Server connection string required by the underlying data access layer, though it is not read directly by the code in this directory.
 
 ### Relationships
 
-The components in `WinFormsApp1` rely on a clear separation between the host process, the module lifecycle, and the UI presentation. `Program.cs` does not know about `UserForm` or `DefaultModuleController` by name; it only interacts with the `IModuleController` interface.
+The flow of control begins in `Program.cs`, which uses MEF to discover and instantiate `DefaultModuleController` from the `Controller/` directory. The controller, in turn, injects `UserForm` (from `View/`) and the shared `UserViewModel` into its constructor.
 
-1.  **Startup Chain**: `Program.Main` uses `CompositionHelper` to build a container that scans loaded assemblies. It resolves all `IModuleController` exports. In this project, that resolution yields `DefaultModuleController`.
-2.  **View-ViewModel Wiring**: `DefaultModuleController` receives `IMainView` (which is `UserForm`) and `IMainViewModel` (which is `UserViewModel`) via MEF imports. Upon construction, it assigns the view model to the view.
-3.  **Execution Loop**: `DefaultModuleController.Run()` calls `Application.Run` on the `UserForm`. This blocks the main thread until the form is closed. `UserForm` binds its controls to properties on the view model, handling data display and user input for adding users.
-4.  **Configuration**: [App.config](WinFormsApp1/App.md) provides the `ConnectionString` required by the business layer. Although `Program.cs` does not read this directly, the MEF container constructs the business layer objects (like `ModelContext`) which read this setting during startup.
+The wiring is imperative: `DefaultModuleController` assigns the view model to the form’s `DataContext`, which triggers the form’s binding logic to connect UI controls to the view model’s properties. Once wired, the controller calls `Application.Run` on `UserForm`, blocking the thread until the user closes the window.
+
+The dependency direction is strict:
+1.  `Program.cs` depends on `DefaultModuleController` (via MEF resolution).
+2.  `DefaultModuleController` depends on `UserForm` and `UserViewModel`.
+3.  `UserForm` depends on `UserViewModel` for state and commands.
+
+The `App.config` file is consumed transitively by the `BusinessLayer` and `DataAccessLayer` projects, not by `WinFormsApp1` directly.
 
 ```mermaid
 flowchart TD
     subgraph "WinFormsApp1 Host"
-        Program[Program.cs]
+        P[Program.cs]
     end
-
+    
     subgraph "Controller"
         DMC[DefaultModuleController]
     end
-
+    
     subgraph "View"
         UF[UserForm]
     end
+    
+    subgraph "Shared MVVM Layers"
+        VM[UserViewModel]
+    end
 
-    Program -->|Resolves IModuleController| DMC
-    DMC -->|Imports IMainView| UF
-    DMC -->|Sets DataContext on| UF
-    DMC -->|Starts Message Loop| UF
+    P -->|Resolves & Calls| DMC
+    DMC -->|Injects & Wires| UF
+    DMC -->|Injects| VM
+    UF -->|Binds to| VM
 ```
 
 ### Rough edges
 
-*   **Hard Casts in Controller**: `DefaultModuleController.Run()` casts the `IMainView` to `Form`. This will throw a runtime exception if a non-`Form` implementation of `IMainView` is ever injected.
-*   **Single Module Limitation**: `Program.cs` iterates through modules in two separate loops (initialize, then run). Because `DefaultModuleController.Run()` blocks the thread, any subsequent modules in the list would never execute their `Run()` method.
-*   **Missing Shutdown**: The `IModuleController.Shutdown()` method is defined but never called by `Program.cs`, preventing clean teardown of modules from the host.
-*   **Default UI Text**: The `UserForm` title remains the designer default "Form1" rather than a descriptive name.
+*   `IModuleController.Shutdown()` is defined in the contract but never called by `Program.cs`; the application exits immediately when the main form closes, leaving cleanup hooks unreachable.
+*   The error dialog in `Program.cs` displays text in German, while other user-facing messages are in English, resulting in inconsistent localization.
+*   `UserForm` is titled "Form1" in the UI, which appears to be an oversight from the initial design generation.
 
 ## Contents
 - [App.config](WinFormsApp1/App.md)

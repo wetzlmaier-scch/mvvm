@@ -1,48 +1,53 @@
 ### Purpose
 
-This directory contains design-time view models for the User Management module in a WPF application. Its sole responsibility is to provide sample data to the WPF XAML designer so that views like `UserView.xaml` render with populated fields instead of empty placeholders. These classes are never used at runtime; they exist exclusively to bridge the gap between MEF-based dependency injection (which cannot run in the designer) and the visual design surface.
+The `UserManagement/Design` directory contains design-time stubs for the WPF XAML designer. Its sole responsibility is to provide sample data to `UserView.xaml` when the project is open in Visual Studio, since the runtime dependency injection (MEF) services are not available in the designer environment.
+
+These files belong together because they form a single, hand-maintained composition tree that mirrors the real `UserManagement/ViewModel` hierarchy. Without them, the designer would render a blank window instead of a populated user interface.
 
 ### Software Components
 
-The directory consists of three C# classes, each subclassing a corresponding runtime view model from `UserManagement/ViewModel/`. They are grouped by their role in the designer hierarchy:
+The directory consists of three C# classes, each a subclass of a corresponding runtime view model:
 
-*   **`DesignUserViewModel`** (`UserManagement/Design/DesignUserViewModel.cs`): This is the root design-time object. It subclasses the real `UserViewModel` and manually instantiates its two child view models in the constructor, bypassing MEF imports.
-*   **`DesignShowUsersViewModel`** (`UserManagement/Design/DesignShowUsersViewModel.cs`): A subclass of `ShowUsersViewModel` that seeds the `Users` collection with three hard-coded `UserModel` entries (Jane Doe, John Smith, Alice Johnson).
-*   **`DesignAddUserViewModel`** (`UserManagement/Design/DesignAddUserViewModel.cs`): A subclass of `AddUserViewModel` that pre-fills `FirstName` with "Sample" and `LastName` with "User" to demonstrate text input bindings.
+*   **[DesignUserViewModel](UserManagement/Design/DesignUserViewModel.md)**: The root of the design-time hierarchy. It extends the real `UserViewModel` and manually instantiates the two child view models (`ShowUsersViewModel` and `AddUserViewModel`) in its constructor, bypassing MEF.
+*   **[DesignShowUsersViewModel](UserManagement/Design/DesignShowUsersViewModel.md)**: Extends `ShowUsersViewModel` to seed the `Users` collection with three hard-coded `UserModel` entries (Jane Doe, John Smith, Alice Johnson) so the data grid has content to render.
+*   **[DesignAddUserViewModel](UserManagement/Design/DesignAddUserViewModel.md)**: Extends `AddUserViewModel` to pre-fill the `FirstName` and `LastName` properties with placeholder text ("Sample" and "User") so the form fields are not empty in the preview.
 
-All three classes rely on inheritance from the real view models to ensure XAML bindings resolve correctly. They override no methods; their logic is limited to constructor assignments that trigger the base class's observable property changes.
+None of these classes participate in the running application. They are ignored during runtime composition and exist solely to satisfy the `d:DesignInstance` reference in `UserView.xaml`.
 
 ### Relationships
 
-The dependency flow is strictly top-down from the designer entry point to the leaf view models. `UserView.xaml` references `DesignUserViewModel` via `d:DesignInstance`. When the designer instantiates `DesignUserViewModel`, its constructor creates instances of `DesignShowUsersViewModel` and `DesignAddUserViewModel` and assigns them to the inherited properties `ShowUsersViewModel` and `AddUserViewModel`, respectively.
+The components form a strict parent-child hierarchy that replicates the structure of the real `UserViewModel`. `DesignUserViewModel` is the entry point referenced by the XAML designer. It creates instances of `DesignShowUsersViewModel` and `DesignAddUserViewModel`, assigning them to the base class properties. This manual wiring replaces the MEF `[Import]` mechanism used at runtime.
 
-This structure mirrors the runtime composition but replaces MEF `[Import]` resolution with direct `new` calls. Because the designer does not execute MEF, this manual wiring is necessary to populate the view. The base classes (`UserViewModel`, `ShowUsersViewModel`, `AddUserViewModel`) contain the actual business logic and service imports, but in the design-time context, those imports remain null or unresolvable, which is safe because the designer only needs to render the UI structure and sample data.
+The dependency direction is one-way: the design stubs depend on the runtime view models (`UserViewModel`, `ShowUsersViewModel`, `AddUserViewModel`) and the `UserModel` data class. The runtime view models have no knowledge of the design stubs. Because the design stubs hard-code the child types via `new`, any change to the runtime composition (e.g., swapping a view model type) will not automatically update the designer preview, requiring manual synchronization.
 
 ```mermaid
 flowchart TD
-    subgraph "WPF Designer"
-        XAML[UserView.xaml]
+    subgraph "WPF XAML Designer"
+        XAML["UserView.xaml"] -->|d:DesignInstance| Root
     end
 
     subgraph "UserManagement/Design"
-        DVVM[DesignUserViewModel]
-        DSVVM[DesignShowUsersViewModel]
-        DAVVM[DesignAddUserViewModel]
+        Root["DesignUserViewModel"] -->|new| Show
+        Root -->|new| Add
     end
 
-    subgraph "UserManagement/ViewModel (Base Classes)"
-        VVM[UserViewModel]
-        SVVM[ShowUsersViewModel]
-        AVVM[AddUserViewModel]
+    subgraph "UserManagement/ViewModel (Runtime)"
+        RootBase["UserViewModel"] 
+        ShowBase["ShowUsersViewModel"]
+        AddBase["AddUserViewModel"]
     end
 
-    XAML -->|"d:DesignInstance"| DVVM
-    DVVM -->|"inherits from"| VVM
-    DVVM -->|"constructs & assigns"| DSVVM
-    DVVM -->|"constructs & assigns"| DAVVM
-    DSVVM -->|"inherits from"| SVVM
-    DAVVM -->|"inherits from"| AVVM
+    Root -.->|inherits| RootBase
+    Show["DesignShowUsersViewModel"] -.->|inherits| ShowBase
+    Add["DesignAddUserViewModel"] -.->|inherits| AddBase
+    
+    ShowBase -->|uses| Model["UserModel"]
+    AddBase -->|uses| Model
 ```
+
+### Rough edges
+
+The design-time composition is manually wired using `new` statements rather than mirroring the runtime MEF exports. This creates a second, parallel composition tree that must be updated manually whenever the runtime view model structure changes, leading to potential drift. Additionally, `DesignAddUserViewModel` is declared as `partial` without a corresponding partial definition, an inconsistency not shared by the other two stubs.
 
 ## Contents
 - [DesignAddUserViewModel.cs](UserManagement/Design/DesignAddUserViewModel.md)

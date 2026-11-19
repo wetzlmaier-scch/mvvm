@@ -1,19 +1,22 @@
 # `UserManagement/Design/DesignAddUserViewModel.cs`
 
 ### Purpose
-
-`DesignAddUserViewModel` exists so the "add user" form has plausible content to render in the WPF XAML designer. It subclasses the runtime `AddUserViewModel` and pre-fills `FirstName` with `"Sample"` and `LastName` with `"User"`, so the form's text boxes appear populated rather than empty when the designer loads the view. It contains no other logic.
+`DesignAddUserViewModel` exists so the "add user" form has plausible content to render in the WPF XAML designer. It subclasses the runtime `AddUserViewModel` and pre-fills `FirstName` with `"Sample"` and `LastName` with `"User"` in its constructor. Nothing about it participates in the running application.
 
 ### Role in the Codebase
+It is one of three design-time stubs in `UserManagement/Design/` (alongside `DesignShowUsersViewModel` and `DesignUserViewModel`), each mirroring a real view model from `UserManagement/ViewModel/` with demo data. The designer instantiates the view through a `d:DesignInstance` reference to `DesignUserViewModel`, which in turn constructs this class:
 
-One of three designer-only view models in `UserManagement/Design/` (alongside `DesignUserViewModel` and `DesignShowUsersViewModel`). The class is marked `partial` but no generated designer partial exists for it, so the constructor shown here is its complete implementation. Nothing at runtime references it: the runtime container exports `AddUserViewModel` via `[Export(typeof(IAddUserViewModel))]`, and the designer path never goes through the container. If it were removed, the add-user region of the designer preview would show empty fields; runtime behaviour would be unaffected.
+```csharp
+AddUserViewModel = new DesignAddUserViewModel();
+```
+
+Because the only thing it adds is two demo strings, removing it would only lose sample content in the designer — the application's runtime behaviour, driven by the real `AddUserViewModel`, is unaffected.
 
 ### Relationships
-
-- **Base class:** `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`), itself a `ValidatableViewModelBase<IUser>` with `[ObservableProperty]`-generated `FirstName`/`LastName` properties, an `IUserService` import, and a `SaveUserCommand`. `DesignAddUserViewModel` overrides nothing — it only assigns to the inherited properties in its constructor.
-- **Sole constructor:** `DesignUserViewModel` (`UserManagement/Design/DesignUserViewModel.cs`) sets `AddUserViewModel = new DesignAddUserViewModel()`.
-- **Design-time chain:** `WpfApp1/View/UserView.xaml` declares `d:DataContext="{d:DesignInstance Type=design:DesignUserViewModel, ...}"`, so the designer constructs `DesignUserViewModel`, which in turn constructs this class.
+- **Base class:** `AddUserViewModel` (`UserManagement/ViewModel/AddUserViewModel.cs`), a `ValidatableViewModelBase<IUser>` whose `[ObservableProperty]` source generators produce the `FirstName` and `LastName` properties this class sets. It inherits all of that view model's behaviour — validation hooks and the `SaveUserCommand` — but none of that logic runs in the designer, where no MEF imports (`UserService`, `LoggingService`, `MessageService`) are provided.
+- **Sole caller:** `DesignUserViewModel` (`UserManagement/Design/DesignUserViewModel.cs`), the design-time root that builds the whole designer view hierarchy.
 
 ### Behavior & Details
+The entire class is its parameterless constructor, which assigns the two demo names to the inherited observable properties. Setting them also fires the inherited `OnFirstNameChanged`/`OnLastNameChanged` hooks, which call `ValidateProperty` — harmless at design time, since validation results are never acted on there. The values are display-only placeholders with no runtime meaning.
 
-The single constructor assigns two string literals to inherited observable properties. Because those properties are `[ObservableProperty]`-generated, the assignments also trigger the base class's `OnFirstNameChanged`/`OnLastNameChanged` handlers, which call `ValidateProperty`. That validation runs against a `UserValidator` and `HasErrors`, so it is worth knowing the sample values ("Sample"/"User") pass validation — otherwise the designer would display validation error adornments. No commands, services, or logging are touched here; the `[Import]` services on the base class remain null in this design-time instance, which is fine because nothing calls them from the designer.
+Note the class is declared `partial`, but no other part for it exists in the repository; the modifier has no effect.

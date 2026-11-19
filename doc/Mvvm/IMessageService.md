@@ -2,32 +2,55 @@
 
 ### Purpose
 
-This file defines the `IMessageService` interface, the contract for showing modal message boxes (information, warning, error, and yes/no-style questions) from MVVM code. It exists so that view models in framework-agnostic modules (like `UserManagement`) can display messages and ask the user questions without referencing WPF's `System.Windows.MessageBox` or WinForms' `System.Windows.Forms.MessageBox` types directly. It is the core piece that decouples business logic from the UI framework.
+This file defines the `IMessageService` interface, the contract for showing message boxes (information, warning, error, and yes/no-style questions) from MVVM code. It exists so that view models in framework-agnostic projects can present user feedback without referencing a specific UI toolkit — WPF, WinForms, or console. The concrete host decides at runtime which `MessageBox`-like mechanism is used.
+
+The interface has no base type; it is a standalone contract in namespace `Mvvm`.
 
 ### Role in the Codebase
 
-This interface sits at the top of a small messaging subsystem inside the `Mvvm` project. The `Mvvm` project acts as the core abstraction layer containing shared MVVM infrastructure (`ViewModelBase`, `IModuleController`, etc.) alongside this specific contract. By defining the interface here, the project guarantees that any view model can depend on user feedback mechanisms without creating a project-level dependency on `Mvvm.Wpf` or `Mvvm.Winforms`. If this file were removed, view models would lose their framework-agnostic way to interact with the user and be forced to import specific UI namespaces.
+This is a core abstraction in the `Mvvm` framework project — the shared, framework-agnostic layer that all host applications (`WpfApp1`, `WinFormsApp1`, `ConsoleApp1`, feature modules like `UserManagement`) build on. It sits alongside other framework primitives such as `IMainViewModel`, `IModuleController`, and the view-model base types.
+
+The interface is the seam between "view model wants to tell the user something" and "some UI host actually draws it." Removing it would force every view model to take a direct dependency on a platform UI library, destroying the host-swap design of the framework.
 
 ### Relationships
 
-- **`MessageResult`**: This interface relies on the `MessageResult` enum (defined in `Mvvm/MessageResult.cs` in the same namespace) as the return type for its question methods. The enum maps the possible button clicks from a UI message box.
-- **Implementations**: Three sibling projects provide concrete implementations decorated with `[Export(typeof(IMessageService))]` for MEF (Managed Extensibility Framework) discovery:
-  - `Mvvm.Wpf/MessageService.cs` (WPF host)
-  - `Mvvm.Winforms/MessageService.cs` (WinForms host)
-  - `Mvvm.Console/MessageService.cs` (Console host)
-- **Consumers**: View models in feature modules like `UserManagement` use MEF's `[Import]` attribute to pull this service in at runtime. For example, `UserManagement/ViewModel/AddUserViewModel.cs` contains `[Import] public IMessageService MessageService { get; set; } = null!;`.
-- **Tests**: Unit tests, such as those in `TestProject1/UserViewModelTest.cs`, use Moq to mock this interface (`new Mock<IMessageService>()`) in order to test view model logic in isolation from the UI thread.
+- **`MessageResult`** (`Mvvm/MessageResult.cs`, same project): the enum returned by the three question methods. It is a platform-neutral stand-in for WPF's `MessageBoxResult` / WinForms' `DialogResult`, with values numbered to match them (`OK = 1`, `Cancel = 2`, `Yes = 6`, `No = 7`, ...).
+
+- **Implementations** — three sibling class libraries each provide a `MessageService : IMessageService` decorated with `[Export(typeof(IMessageService))]` for MEF discovery:
+  - `Mvvm.Wpf/MessageService.cs` — wraps WPF `MessageBox.Show`
+  - `Mvvm.Winforms/MessageService.cs` — wraps WinForms `MessageBox.Show`
+  - `Mvvm.Console/MessageService.cs` — writes to `Console.WriteLine` / `Console.Error`
+
+- **Callers** — view models pull the service in via MEF `[Import]`. For example, `UserManagement/ViewModel/AddUserViewModel.cs` declares `[Import] public IMessageService MessageService { get; set; }` and calls `MessageService.ShowError("User data is invalid!")` when validation fails.
+
+- **Tests** — `TestProject1/UserViewModelTest.cs` builds `new Mock<IMessageService>()` (Moq) and injects it, so view-model logic can be tested without a UI host.
+
+Because callers depend only on the interface, they are agnostic about which of the three `MessageService` classes the MEF container hands them.
 
 ### Behavior & Details
 
-This interface groups its nine methods into two categories based on whether they expect a response from the user:
+The interface declares nine members in three families:
 
-- **One-way notifications**: 
-  - `ShowMessage`, `ShowWarning`, and `ShowError` return `void`. Each provides an overload taking only a `message` string (which allows the implementation to supply a default caption like "Warning") and an overload taking both `message` and `caption`. Implementations are expected to display an informational box with a button matching the severity level.
-- **User-input questions**: 
-  - `ShowYesNoCancelQuestion`, `ShowYesNoQuestion`, and `ShowOkCancelQuestion` return a `MessageResult`. These methods are designed to map directly to the available buttons of the host platform's message box. 
-  - *Notable edge case*: Notice that a standard `ShowYesNoQuestion` returns `MessageResult.No` as its fallback/default, while the other two questions default to `MessageResult.Cancel` (verified from `Mvvm.Wpf/MessageService.cs`). This subtle mismatch can be important when the view model uses the result to decide whether to proceed with an operation.
+**Notification methods (no return value):**
 
-### Rough Edges
+- `ShowMessage(string message, string caption)` / `ShowMessage(string message)` — informational messages; the single-argument overload is a caption-less convenience.
+- `ShowWarning(string message, string caption)` / `ShowWarning(string message)` — warnings.
+- `ShowError(string message, string caption)` / `ShowError(string message)` — errors.
 
-The `MessageResult` enum (which this interface depends on) contains values like `Abort`, `Retry`, `Ignore`, `TryAgain`, and `Continue` that are inherited from WinForms' `MessageBoxResult`. However, `IMessageService` only exposes methods for `YesNoCancel`, `YesNo`, and `OkCancel` questions. Consequently, these extra enum values can never be returned by a compliant implementation, making them dead weight in the enum specifically for the purpose of this interface.
+**Question methods (return `MessageResult`):**
+
+- `ShowYesNoCancelQuestion(string message, string caption)`
+- `ShowYesNoQuestion(string message, string caption)`
+- `ShowOkCancelQuestion(string message, string caption)`
+
+Each question method corresponds to a specific button set on the host platform's message box, and returns whichever button the user chose, expressed as the shared `MessageResult` enum. Callers typically branch on `MessageResult.Yes` / `MessageResult.No` / `MessageResult.Cancel`.
+
+A few points worth knowing before you implement or extend this:
+
+- **Default button conventions are an implementation detail, not part of this contract.** The interface does not say which button is preselected. In the WPF and WinForms implementations, `ShowYesNoQuestion` defaults to *No* while the other two questions default to *Cancel*. Any new implementation should match those conventions if it is to feel consistent across hosts.
+- **Question methods are unsupported on the console host.** `Mvvm.Console/MessageService.cs` implements all three question methods as `throw new NotImplementedException()`. A view model that calls `ShowYesNoQuestion` will crash under the console host — this is an accepted limitation, but it constrains which view models can run headless.
+- **The `MessageResult` enum is wider than the interface can produce.** Members like `None`, `Abort`, `Retry`, `Ignore`, `TryAgain`, and `Continue` mirror the full WinForms `DialogResult` set but are never returned by any of the nine methods. Do not write code that expects to receive those values from a question call.
+
+### Rough edges
+
+The `MessageResult` enum contains values (`None`, `Abort`, `Retry`, `Ignore`, `TryAgain`, `Continue`) that no implementation can ever return, since the interface only offers OK/Cancel, Yes/No, and Yes/No/Cancel button sets. The dead values exist only to keep the enum's numeric alignment with WPF's and WinForms' result enums intact, which the platform implementations rely on for their unchecked casts.

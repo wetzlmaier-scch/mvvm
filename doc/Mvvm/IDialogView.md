@@ -1,32 +1,24 @@
-# `Mvvm/IDialogView.cs`
-
 ### Purpose
 
-This file defines `IDialogView<TDialogResult>`, the view-side contract for the application's main window in this repository's hand-rolled MVVM framework. It says what a top-level window can be asked to do (be shown, be closed, report a dialog result) and what it can announce (that it is closing, that it has closed), without committing to a UI framework. The generic `TDialogResult` exists because the two host apps disagree on what "the result of the window" is: WPF's `Window` has `Nullable<bool> DialogResult` while WinForms' `Form` has `DialogResult`.
+`Mvvm/IDialogView.cs` defines `IDialogView<TDialogResult>`, the view-side contract for a top-level window in this repository's hand-rolled MVVM framework. It captures the minimum a window must expose so that a controller can open it, pass it a result, and react to it being dismissed — without knowing anything about WinForms or WPF.
 
-### Role in the codebase
+### Role in the Codebase
 
-`IDialogView<TDialogResult>` is the middle rung of the view interface hierarchy in the `Mvvm` project. `IView` (defined in `Mvvm/IView.cs`) provides `object? DataContext`, and `IMainView<TDialogResult, TDimension>` (defined in `Mvvm/IMainView.cs`) extends this interface and adds `Left`/`Top`/`Width`/`Height`. No app ever implements this interface directly — both apps implement `IMainView`. Removing this file breaks the interface hierarchy and therefore `IMainView`, the two view classes (`UserForm`, `UserView`), and the module controllers that consume them.
+The interface sits in the middle of the `Mvvm` project's view hierarchy: `IView` (in `Mvvm/IView.cs`) → `IDialogView` → `IMainView<TDialogResult, TDimension>` (in `Mvvm/IMainView.cs`). It is the generic "window" rung; `IMainView` is the specialization that adds geometry (`Left`, `Top`, `Width`, `Height`). Removing it would force `IMainView` to declare all the window members itself, so every caller typed against `IMainView` would keep working, but any code that needs just the dialog surface (`Show`, `Close`, `DialogResult`) with no positioning would have no interface to depend on.
 
 ### Relationships
 
-- **Extends** `IView` from `Mvvm/IView.cs`, inheriting `object? DataContext { get; set; }`.
-- **Extended by** `IMainView<TDialogResult, TDimension>` in `Mvvm/IMainView.cs`.
-- **Implemented indirectly by** `WpfApp1/View/UserView.xaml.cs` (as `IMainView<bool?, double>`, where `bool?` mirrors WPF `Window.DialogResult`) and `WinFormsApp1/View/UserForm.cs` (as `IMainView<DialogResult, int>`, where `DialogResult` is the WinForms enum).
-- **Consumed by** each app's `DefaultModuleController` via `IMainView`. In the WPF app, `Run()` calls `MainView.Show()` and `Shutdown()` calls `MainView.Close()`. In the WinForms app, `Run()` instead calls `Application.Run((Form)MainView)` directly (no call to the interface's `Show()`), and only `Shutdown()` calls `MainView.Close()`.
+- **Extends** `IView` (defined in `Mvvm/IView.cs`), which contributes the single `object? DataContext` property. That is how a controller binds a view model to the window.
+- **Extended by** `IMainView<TDialogResult, TDimension>` (defined in `Mvvm/IMainView.cs`), which is the interface the controllers actually receive — e.g. as `IMainView<bool?, double>` in the WPF app and `IMainView<DialogResult, int>` in the WinForms app. `IDialogView` itself is the shared part of that contract.
 
 ### Behavior & Details
 
-No logic lives here — it is a pure interface contract with no default implementations. The members:
+The members divide into three jobs:
 
-- `TDialogResult DialogResult { get; set; }` — the result of the window, typed by the implementing framework (e.g. `bool?` in WPF). In the WPF implementation it is inherited from `Window`.
-- `event CancelEventHandler Closing` and `event EventHandler Closed` — announce the close sequence. `CancelEventHandler` (from `System.ComponentModel`, the only using in this file) signals the convention that a `Closing` subscriber can cancel the close.
-- `void Show()` / `void Close()` — the lifecycle calls the module controllers make against the view.
+- **Result channel**: `TDialogResult DialogResult { get; set; }`. The controller writes a result to the view before closing it; the view then uses it to decide how to behave on exit (the generic parameter lets each app type its result however it wants, e.g. `bool?` in the WPF app).
+- **Lifecycle events**: `Closing` (a `CancelEventHandler`, so subscribers can cancel the close) and `Closed` (an `EventHandler`, firing after the window has gone). These mirror the standard framework close sequence and let the owning logic clean up or veto a close.
+- **Open/close control**: `Show()` and `Close()` — the only way a controller drives the window's lifetime through this contract.
 
-One thing a reader cannot see from this file: the `TDialogResult` parameter is only as generic as it appears. `UserForm` types it as the WinForms `DialogResult` enum, so the "dialog result" of the WinForms app is, in fact, the `Form.DialogResult` property — the interface member is satisfied by an inherited framework member rather than by any code in the app itself. The interface imposes no constraint on `TDialogResult`; a wrong or unexpected type surfaces only in whatever code reads `DialogResult`.
+A typical controller flow is: set `DataContext`, set `DialogResult` when the answer is known, call `Close()`, and rely on `Closing`/`Closed` for teardown. The interface has no implementation; it is the shape each platform's main-window implementation is expected to satisfy.
 
-### Rough edges
-
-- `Show()` is effectively dead in one of the two host apps: the WinForms `DefaultModuleController.Run()` calls `Application.Run((Form)MainView)` instead of `MainView.Show()`, so the interface member is only exercised by the WPF app.
-- `DialogResult` is written (`{ get; set; }`) but nothing in the repository reads it — the controllers never observe a `bool?` or `DialogResult` value after showing the window. The member is contract surface that current callers don't use.
-- `Closing`/`Closed` have no subscribers in either host app today; they are declared but unlistened.
+Rough edges: The name `DialogView` (and the `DialogResult` member) suggests a modal dialog, but in this codebase it actually models the application's main window — the naming carries the "dialog result" pattern of modal windows into a non-modal top-level window.

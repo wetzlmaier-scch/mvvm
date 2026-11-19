@@ -1,60 +1,63 @@
 ### Purpose
 
-`DataAccessLayer` is the contract project for the data access layer, defining the abstractions that allow business logic to interact with the persistence engine without knowing which ORM is in use. It contains no implementation logic; its sole responsibility is to establish the interfaces, base types, and shared exception types that higher layers depend on.
-
-The contents belong together because they form a closed set of dependencies required to define a repository pattern. You need the entity contract to define what can be stored, the repository interface to define how to retrieve it, the factory to define how to instantiate repositories, and the unit of work to define how to manage transactions. Keeping these in a separate project ensures that the `BusinessLayer` never directly references NHibernate or any other persistence library.
+`DataAccessLayer` is a contracts-only project that defines the persistence abstractions for the application, containing interfaces and base classes with no executable logic. It establishes the standard for how the business layer interacts with the database, defining the entity marker, query contracts, factory patterns, and transaction units without referencing specific ORM technologies like NHibernate. These files belong together because they form the "engine-agnostic" boundary; by separating these definitions from their concrete implementations (which reside in `DataAccessLayer.Hibernate`), the project ensures that higher-level business logic depends only on these stable contracts.
 
 ### Software Components
 
-The code in this directory breaks down into four main functional groups, all defined as interfaces or base classes with minimal logic.
+The directory contains four distinct logical components:
 
-**Entity Contracts**
-*   **`IEntity.cs`**: Defines [IEntity](DataAccessLayer/IEntity.md), the marker interface that any persistable object must implement. It enforces a read-only `Id` property of a struct type.
-*   **`Entity.cs`**: Defines [Entity](DataAccessLayer/Entity.md), the abstract base class that implements [IEntity](DataAccessLayer/IEntity.md). It provides the default implementation for the `Id` property, ensuring concrete entities inherit the "identity is assigned by the provider" behavior.
-
-**Repository Contracts**
-*   **`IRepository.cs`**: Defines [IRepository](DataAccessLayer/IRepository.md), the primary read-only query contract. It exposes methods like `GetQueryable` and `Find`, allowing business code to query data via LINQ without touching the database driver.
-*   **`IRepositoryFactory.cs`**: Defines [IRepositoryFactory](DataAccessLayer/IRepositoryFactory.md), the contract for creating and disposing repository instances. This isolates the session management logic from the business layer.
-
-**Transaction & Support**
-*   **`IUnitOfWork.cs`**: Defines [IUnitOfWork](DataAccessLayer/IUnitOfWork.md), the interface for managing database transactions (`Begin`, `Commit`, `Rollback`). This allows business services to treat multiple operations as an atomic unit.
-*   **`DataAccessException.cs`**: Defines [DataAccessException](DataAccessLayer/DataAccessException.md), a custom exception type intended to wrap persistence errors. This allows callers to catch database failures without handling ORM-specific exceptions.
-*   **`SortOrder.cs`**: Defines the [SortOrder](DataAccessLayer/SortOrder.md) enum for specifying ascending or descending sort directions.
+*   **Entity Contract**: `IEntity.cs` and `Entity.cs` define the shape of persistable data. `IEntity<TKey>` is a marker interface requiring a value-type `Id`, while `Entity<TKey>` is the abstract base class that provides a default implementation for this identity.
+*   **Query Contract**: `IRepository.cs` defines the read-only surface for data access. It specifies generic methods for querying entities using LINQ, allowing callers to filter data without knowing the underlying storage mechanism.
+*   **Lifecycle Contract**: `IRepositoryFactory.cs` and `IUnitOfWork.cs` manage the creation and atomicity of data operations. The factory contract defines how repositories are instantiated and disposed, while the unit of work contract defines how transactions are begun, committed, or rolled back.
+*   **Error & Utility Types**: `DataAccessException.cs` provides a specific exception type for wrapping persistence failures, and `SortOrder.cs` defines a simple enum for specifying sort direction.
 
 ### Relationships
 
-The components in this directory form a dependency graph where the repository and factory contracts rely on the entity contracts to enforce type safety.
+The components in this directory form a dependency chain that flows from concrete implementations in other projects back to these abstract definitions. `IRepository<TKey>` is the central query interface, and `IRepositoryFactory<TRepository, TKey>` constrains the repositories it produces to implement this contract. Similarly, `IUnitOfWork` serves as the base for transaction management, which is exposed via repositories.
 
-*   **Entity Constraint**: [IRepository](DataAccessLayer/IRepository.md) and [IRepositoryFactory](DataAccessLayer/IRepositoryFactory.md) both constrain their generic entity types to `IEntity<TKey>`. This ensures that only types with a valid, read-only identity can be passed to the repository methods.
-*   **Factory Output**: [IRepositoryFactory](DataAccessLayer/IRepositoryFactory.md) produces repositories that implement [IRepository](DataAccessLayer/IRepository.md). In the broader codebase, the business layer interacts with the factory to get a repository instance, which it then uses to execute queries defined in [IRepository](DataAccessLayer/IRepository.md).
-*   **Transaction Context**: While [IRepository](DataAccessLayer/IRepository.md) is stateless in this contract, concrete implementations (like `IHibernateRepository` in other projects) expose a `UnitOfWork` property. [IUnitOfWork](DataAccessLayer/IUnitOfWork.md) provides the transactional context for those operations.
-*   **Error Boundary**: [DataAccessException](DataAccessLayer/DataAccessException.md) is designed to be thrown by the concrete implementations when persistence fails, allowing the `BusinessLayer` to catch a single, consistent exception type.
-
-Note that [SortOrder](DataAccessLayer/SortOrder.md) is currently isolated. It is not referenced by any other interface in this directory or in the known concrete implementations, meaning it is available for future use but not part of the active query contract.
+`Entity<TKey>` implements `IEntity<TKey>`, providing the concrete base for domain models like `User`. Both of these are consumed by `IRepository<TKey>`, whose methods enforce that the generic entity type must implement `IEntity<TKey>`. This constraint ensures that only types with a valid identity can be queried through the layer.
 
 ```mermaid
 flowchart TD
     subgraph "DataAccessLayer Contracts"
-        Entity["Entity.cs<br/>(Abstract Base)"]
-        IEntity["IEntity.cs<br/>(Interface)"]
-        Repo["IRepository.cs<br/>(Interface)"]
-        Factory["IRepositoryFactory.cs<br/>(Interface)"]
-        UoW["IUnitOfWork.cs<br/>(Interface)"]
-        Ex["DataAccessException.cs<br/>(Exception)"]
-        Sort["SortOrder.cs<br/>(Enum)"]
+        IE[IEntity<TKey>]
+        E[Entity<TKey>]
+        IR[IRepository<TKey>]
+        IF[IRepositoryFactory]
+        IU[IUnitOfWork]
+        DAE[DataAccessException]
+        SO[SortOrder]
     end
 
-    Entity -->|implements| IEntity
-    Repo -->|constrained by| IEntity
-    Factory -->|constrained by| IEntity
-    Factory -->|returns| Repo
+    E -->|implements| IE
+    IR -->|constrains| IE
+    IF -->|constrains| IR
+    IF -->|returns| IR
+    IU -->|inherited by| HU[IHibernateUnitOfWork]
+    
+    subgraph "Concrete Implementations (External)"
+        HR[HibernateRepository]
+        HF[HibernateRepositoryFactory]
+        HUW[HibernateUnitOfWork]
+    end
+
+    HR -->|implements| IR
+    HR -->|implements| IH[IHibernateRepository]
+    IH -->|extends| IR
+    HF -->|implements| IF
+    HF -->|creates| HR
+    HUW -->|implements| IU
+    
+    style DAE fill:#f9f,stroke:#333,stroke-width:2px
+    style SO fill:#f9f,stroke:#333,stroke-width:2px
 ```
+
+Note that `DataAccessException` and `SortOrder` are currently standalone utility types. `DataAccessException` is intended to be thrown by the data access layer to abstract away specific ORM errors, and `SortOrder` is available for future use in query methods, though neither is currently actively referenced by the other core components in this directory.
 
 ### Rough edges
 
-*   **Unimplemented Cleanup**: The `Drop()` method in [IRepositoryFactory](DataAccessLayer/IRepositoryFactory.md) is part of the contract, but the known concrete implementation throws `NotImplementedException`. Code relying on this for graceful shutdown will crash.
-*   **Narrow Exception Coverage**: [DataAccessException](DataAccessLayer/DataAccessException.md) is only thrown during factory initialization in the current codebase. It does not wrap standard query or transaction failures, so catching it will not capture all runtime data access errors.
-*   **Unused Enum**: [SortOrder](DataAccessLayer/SortOrder.md) is defined but not utilized by any interface in this directory. It appears to be reserved for future functionality or unused by the current query APIs.
+*   `SortOrder` is defined but currently unused by any other component in the repository.
+*   The `Drop()` method on `IRepositoryFactory` is part of the contract, but its primary implementation in the Hibernate layer throws `NotImplementedException`, meaning factory teardown is not fully functional.
 
 ## Contents
 - [DataAccessException.cs](DataAccessLayer/DataAccessException.md)

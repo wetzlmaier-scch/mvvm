@@ -1,47 +1,40 @@
 ### Purpose
 
-`WpfApp1/View` contains the single main window for the WPF host application. It holds the user interface for user management, specifically listing current users and adding new ones. The directory consists of two files that work together: the XAML definition for layout and bindings, and the code-behind that registers the window with the MEF composition container.
+The `WpfApp1/View` directory serves as the presentation layer for the WPF host application (`WpfApp1`). It contains the User Interface (UI) definitions that allow users to interact with the system's features, specifically managing user data. These files belong together because they define the visual structure and user interaction points for the `UserManagement` module, acting as the "face" of the application while delegating business logic to the underlying ViewModels.
 
 ### Software Components
 
-The directory contains one UI component: the `UserView` window. This component is split across two files:
+This directory currently contains a single logical component: the main application window.
 
-*   [UserView.xaml](WpfApp1/View/UserView.md): Defines the visual layout, including the "Current Users" list and the "Add New User" form. It handles all data bindings to the view-models and contains specific validation error templates.
-*   [UserView.xaml.cs](WpfApp1/View/UserView.md): The code-behind for the window. It is minimal, primarily serving to export the view via the `[Export(typeof(IMainView<bool?, double>))]` attribute so the application controller can find it.
+*   **`UserView`**: Defined across `UserView.xaml` and `UserView.xaml.cs`, this is the primary window of the WPF app. It presents a two-column layout: a list of current users on the left and a form to add new users on the right. The component is a pure presentation surface; it holds no business logic. Instead, it binds to the `UserViewModel` and its child ViewModels (`AddUserViewModel`, `ShowUsersViewModel`) to display data and handle user commands. It is exported via MEF to be discovered by the application's controller.
 
 ### Relationships
 
-The component relies on a strict separation between presentation and logic. `UserView` does not contain business logic; instead, it binds to view-models from the `UserManagement` project. Specifically, the XAML binds to `UserViewModel` (the root context), which exposes `ShowUsersViewModel` for loading the user list and `AddUserViewModel` for handling input and saving.
+The relationship between the view and the rest of the application is strictly one-way: the view consumes data and commands from the ViewModels, but never modifies the model or view-model logic directly. The `UserView` window is the entry point for the UI, but it does not launch itself. It relies on the `DefaultModuleController` in `WpfApp1/Controller/` to locate it via its MEF export (`IMainView<bool?, double>`), inject the `UserViewModel` as the `DataContext`, and manage its lifecycle (`Show` and `Close`).
 
-The dependency direction flows from the Controller to this View. `DefaultModuleController` imports the `IMainView<bool?, double>` contract. Because `UserView` is the only exporter of this contract, removing or breaking the code-behind in [UserView.xaml.cs](WpfApp1/View/UserView.md) would prevent the application from starting. At runtime, the controller sets the `DataContext` of the window to the resolved `UserViewModel`, activating the bindings defined in the XAML.
+Within the view, the XAML defines the layout and binds controls to specific properties. The "Add User" form binds to `AddUserViewModel`, which handles validation and the save command. The user list binds to `ShowUsersViewModel`, which asynchronously loads active users when the window is loaded. A `DebugConverter` is defined as a resource in the XAML, but it is currently unused because the binding that would consume it is commented out.
 
 ```mermaid
 flowchart TD
     subgraph "WpfApp1/View"
-        UV_Xaml["UserView.xaml<br/>(Layout & Bindings)"]
-        UV_CS["UserView.xaml.cs<br/>(MEF Export)"]
+        UV[UserView.xaml]
+        UVC[UserView.xaml.cs]
+        UV --- UVC
     end
-    
-    subgraph "UserManagement"
-        UV_Model["UserViewModel"]
-        Show_VM["ShowUsersViewModel"]
-        Add_VM["AddUserViewModel"]
+
+    subgraph "External Dependencies"
+        Ctl[DefaultModuleController]
+        VM[UserViewModel]
+        AddVM[AddUserViewModel]
+        ShowVM[ShowUsersViewModel]
     end
-    
-    UV_CS -->|"Defines"| UV_Xaml
-    UV_CS -->|"Exports IMainView"| Controller["DefaultModuleController"]
-    Controller -->|"Sets DataContext"| UV_Model
-    UV_Xaml -->|"Binds to"| UV_Model
-    UV_Model -->|"Contains"| Show_VM
-    UV_Model -->|"Contains"| Add_VM
-    UV_Xaml -->|"Binds to"| Show_VM
-    UV_Xaml -->|"Binds to"| Add_VM
+
+    Ctl -->|Locates & Shows| UV
+    Ctl -->|Sets DataContext| UV
+    UV -->|Binds to| VM
+    VM -->|Contains| AddVM
+    VM -->|Contains| ShowVM
 ```
-
-### Rough edges
-
-The XAML file contains dead code for the `MyDebugConverter` resource, which is only referenced in commented-out markup. Additionally, the two input fields in the "Add New User" section handle validation errors inconsistently: the first name field uses an inline error template, while the last name field uses a tooltip.
 
 ## Contents
 - [UserView.xaml](WpfApp1/View/UserView.md)
-- [UserView.xaml.cs](WpfApp1/View/UserView.xaml.md)

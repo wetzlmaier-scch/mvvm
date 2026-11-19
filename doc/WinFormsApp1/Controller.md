@@ -1,51 +1,52 @@
 ### Purpose
 
-The `WinFormsApp1/Controller` directory contains the application's module controller, which acts as the bridge between the WinForms host and the MVVM architecture. It holds a single source file that implements the `IModuleController` lifecycle contract, allowing the shared `Mvvm` project to discover and drive the application's startup and shutdown via MEF.
+The `Controller` directory serves as the entry point for the application's module lifecycle within the WinForms host. It contains the single implementation of the `IModuleController` interface, which bridges the host process (`Program.cs`) and the MVVM layers. This directory exists to satisfy MEF composition requirements, allowing the host to discover and execute the application's main module without explicit registration.
 
 ### Software Components
 
-The directory consists of a single component:
+The directory contains one source file: `DefaultModuleController.cs`.
 
-*   **`DefaultModuleController`**: Located in `DefaultModuleController.cs`, this class is the sole `IModuleController` implementation in the project. It is responsible for composing the main view (`UserForm`) and view model (`UserViewModel`) and managing the application's execution loop. For more detailed class documentation, see [DefaultModuleController](WinFormsApp1/Controller/DefaultModuleController.md).
+This file defines the `DefaultModuleController` class, the sole occupant of the directory. It implements the `IModuleController` contract from the shared `Mvvm` project. The class is responsible for:
+*   Wiring the `UserForm` (view) and `UserViewModel` (view model) together.
+*   Hosting the WinForms message loop via `Application.Run`.
+*   Providing the lifecycle hooks (`Initialize`, `Run`, `Shutdown`) required by the MEF container.
+
+As the only `IModuleController` in the project, it is the critical point where the host process transitions into the MVVM architecture.
 
 ### Relationships
 
-`DefaultModuleController` sits at the intersection of the application host and the MVVM layers. It does not contain business logic itself but orchestrates the components that do.
+The `DefaultModuleController` acts as a connector between the static host code and the export-based MVVM components.
 
-*   **MEF Composition**: `Program.Main` uses MEF to locate `DefaultModuleController` by its `IModuleController` export. The controller's constructor accepts `IMainView<DialogResult, int>` and `IMainViewModel` as imports.
-*   **View-ViewModel Wiring**: Upon construction, the controller assigns the `MainViewModel` to the `MainView`'s `DataContext`. This triggers the `UserForm` to set up its data bindings.
-*   **Lifecycle Management**: The controller's `Run()` method starts the WinForms message loop by calling `Application.Run` on the main form, blocking until the application exits.
+*   **Upstream Caller:** `Program.cs` resolves `IModuleController` from the MEF container. It calls `Initialize()` followed by `Run()`. It does not resolve `Shutdown()`.
+*   **Downstream Dependencies:** The constructor uses `[ImportingConstructor]` to inject `IMainView<DialogResult, int>` (resolved as `UserForm`) and `IMainViewModel` (resolved as `UserViewModel`).
+*   **Wiring Mechanism:** The constructor assigns the view model to the view's `DataContext`. Because WinForms lacks automatic data binding, this assignment triggers `UserForm`'s internal `SetupBindings()` method, effectively initializing the UI logic.
+*   **Execution Flow:** `Run()` blocks the thread by starting the WinForms message loop. `Shutdown()` is part of the contract but is not invoked by `Program.cs` in this specific host implementation.
 
 ```mermaid
 flowchart TD
-    subgraph WinFormsApp1_Controller
+    subgraph "WinFormsApp1 Host"
+        P[Program.cs]
+    end
+    
+    subgraph "Controller Directory"
         DMC[DefaultModuleController]
     end
-
-    subgraph Mvvm
-        IMC[IModuleController]
-        IMV[IMainView]
-        IMVM[IMainViewModel]
-    end
-
-    subgraph Views_VMs
+    
+    subgraph "MVVM / View Layer"
         UF[UserForm]
-        UV[UserViewModel]
+        UVM[UserViewModel]
     end
-
-    DMC --implements--> IMC
-    DMC --imports--> IMV
-    DMC --imports--> IMVM
-    IMV --exported by--> UF
-    IMVM --exported by--> UV
-    DMC --sets DataContext--> UF
+    
+    P -->|Resolves & Calls| DMC
+    DMC -->|Injects & Wires| UF
+    DMC -->|Injects & Wires| UVM
+    DMC -->|Blocks on Run()| UF
 ```
 
 ### Rough edges
 
-*   The `Run()` method contains a hard cast of `MainView` to `Form`. This is safe only because `UserForm` is the current sole implementation of `IMainView<DialogResult, int>`; adding a non-Form implementation would cause a runtime exception.
-*   The `Shutdown()` method is defined but never called by `Program.Main`, making the controller-level shutdown path currently dead code in this host.
-*   The view model's `CloseWindow()` and `Shutdown(int)` methods are never invoked by the controller, preventing the view model from signaling a specific exit code back to the host.
+*   `Shutdown()` is effectively dead code in this host; `Program.cs` never calls it, so the lifecycle contract's teardown mechanism is unused.
+*   The controller does not invoke `CloseWindow()` or `Shutdown(int exitCode)` on the `IMainViewModel`, meaning the view model cannot signal an exit code back to the host through these intended hooks.
 
 ## Contents
 - [DefaultModuleController.cs](WinFormsApp1/Controller/DefaultModuleController.md)
